@@ -1,5 +1,8 @@
 #!/bin/sh 
 
+# This install script currently works only on debian-based systems
+# it has been tested with Ubuntu 10.04 - Makefile/packages forthcoming...
+
 # modify these two lines for your configuration
 ARCH=i386
 #ARCH=amd64
