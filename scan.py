@@ -27,7 +27,7 @@ from time import sleep,strftime,time
 from subprocess import Popen, PIPE
 from datetime import datetime
 import decode
-from config import Config, modification_date
+from config import Config, modification_date, customDir
 defaultfn=['split','tif']
 defaultdir= '/tmp/'
 
@@ -113,7 +113,7 @@ class ScanControl(threading.Thread):
        return ret
 
    def setConfigFromNext(self):
-       modDate= modification_date(Config.configfile)
+       modDate= modification_date(customDir)
        if modDate != Config.configModified:
            print "Configuration modified, reloading..."
            self.acquire()

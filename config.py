@@ -23,7 +23,11 @@ Configuration module for Scantelope.
 """
 
 from ConfigParser import NoOptionError, SafeConfigParser as cfgParser
-from os.path import exists, getmtime
+from os.path import exists, getmtime, isdir
+from os import getenv, listdir, mkdir
+HOMEDIR = getenv("HOME") or '/tmp/'
+customDir = HOMEDIR+'/.scantelope'
+
 from datetime import datetime
 
 from socket import gethostname
@@ -59,20 +63,6 @@ class Config():
 
    # should make data more generic with portrait and landscape modes, then sections in configuration file for each scanner
    data={}
-   olddefaults={'avision-600':[generateCropA(1634,2502,182,224),
-                        '-crop 8x12-34-38@! -shave 20x20',
-                        '-l 14.5 -x 85 -t 10 -y 125'],
-          
-          'avision-300':[generateCropA(817,1251,91,112),
-                        '-crop 8x12-17-19@! -shave 10x10',
-                        '-l 14.5 -x 85 -t 10 -y 125'],
-          'hp3900-300': [generateCropA(1250,836,134,82),
-                         '-crop 12x8-19-17@! -shave 10x10',
-                         '--mode Gray -l 45 -t 10 -x 130 -y 90 --opt_nowarmup=yes --opt_nogamma=yes'],
-          'hp3900-600': [generateCropA(2500,1672,268,164),
-                         '-crop 12x8-38-34@! -shave 10x10',
-                         '--mode Gray -l 45 -t 10 -x 130 -y 90 --opt_nowarmup=yes --opt_nogamma=yes']} #90=275
-
 
    @staticmethod
    def generateData(res,dx,dy,x,y,options=''):
@@ -89,8 +79,8 @@ class Config():
                                   ['dx',    str(dx)],
                                   ['dy',   str(dy)],
                                   ['options', str(options)]])
-      Config.saveFile([callback])
-      print "Added <",name,"> to presets."
+      Config.saveFile(customDir+'/'+CUSTOM_NAME,[callback])
+      print "\tAdded Calibration <",name,"> to presets."
      
    @staticmethod
    def createDataEntry(dx,dy,x,y,name=None):
@@ -128,16 +118,18 @@ class Config():
       Config.setMethods()
 
    @staticmethod
-   def saveFile(callbacks = []):
+   def saveFile(filename=None,callbacks = []):
+       if filename == None:
+         filename = Config.configfile
        c=cfgParser()
 
        # preserve other sections
-       if exists(Config.configfile):
-           f=open(Config.configfile,'r')
+       if exists(filename):
+           f=open(filename,'r')
            c.readfp(f)
            f.close()
 
-       f=open(Config.configfile,'w')       
+       f=open(filename,'w')       
 
        Config.setConfig(c,'defaults',[['active',       Config.active],
                                       ['offset',    str(Config.offset)],
@@ -147,8 +139,8 @@ class Config():
 
        c.write(f)
        f.close()
-       Config.configModified = modification_date(Config.configfile)
-       print "Configuration file saved"
+       Config.configModified = modification_date(customDir)
+       print "Configuration file<%s> saved"%filename
 
 
    @staticmethod
@@ -169,31 +161,50 @@ class Config():
          print e
          return False
       name = Config.createDataEntry(dx,dy,origin[0],origin[1],section)
-      print "Added <",name,"> to presets."
+      print "\tAdded <",name,"> to presets."
 
    @staticmethod
-   def loadFile():
-      # returns false if no file or no 'defaults' section
+   def loadLocalFiles():
+     retVal = False
+     if isdir(customDir):
+       for filename in listdir(customDir):
+         retVal |= Config.loadFile(customDir +'/'+filename)  
+     else:
+       mkdir(customDir)
+     return retVal
+
+   @staticmethod
+   def loadFile(cfile=None):
       retVal = False
-      if not exists(Config.configfile):
-         print "Configuration file not found..."
+      if cfile == None:
+        cfile=Config.configfile 
+        hostnameMatch = False
+      else:  
+        hostnameMatch = (customDir+'/'+CUSTOM_NAME == cfile)
+      # returns false if no file or no 'defaults' section
+      print "Processing conf <%s>"%cfile
+      if not exists(cfile):
+         print "\tfile not found..."
       else:
-         f=open(Config.configfile,'r')
+         f=open(cfile,'r')
          c=cfgParser()
          c.readfp(f)
          
          for s in c.sections():
             if s == 'defaults':
-               retVal = True
-               Config.active = c.get('defaults','active') or 'avision' #if (zero-length)
-               Config.offset = c.getpair('defaults','offset')
-               Config.res = c.getint('defaults','resolution')
+               if hostnameMatch:
+                 retVal = True
+                 Config.active = c.get('defaults','active') or 'avision' #if (zero-length)
+                 Config.offset = c.getpair('defaults','offset') or [0,0]
+                 Config.res = c.getint('defaults','resolution') or 300
                  # switch here?
             else:
                Config.getConfig(c,s)
          #generate data dict based on cfg file
          if not retVal:
-            print "Missing 'defaults' section"
+            print "\t(wrong hostname or no 'defaults' section)"
+         else:
+            print "\t*Default found!"
          f.close()
       return retVal
 
@@ -252,21 +263,23 @@ class Config():
    @staticmethod
    def reloadConfig(key = 'avision-300'):
       Config.data = {}
+      Config.loadFile()
+      defaultLoaded = Config.loadLocalFiles()
       # maybe want to choose default key more intelligently (name of found scanners?)
 #      Config.res = Config.validResolutions()[0]
-      if not Config.loadFile():
-         key = Config.hasCustom(key)
-         Config.switch(key)
-         Config.saveFile()
+      customHostKey = Config.hasCustom(key)
+      if not defaultLoaded:
+         Config.switch(customHostKey)
+         Config.saveFile(customDir+'/'+CUSTOM_NAME)
       else:
          try:
             Config.makeKey()
          except KeyError, e:
             print "Error:", e, "defaulting to",key
-            Config.switch(key)
+            Config.switch(customHostKey)
          Config.setMethods()
-         print 'Loaded configuration'
-      Config.configModified = modification_date(Config.configfile)
+         print 'Loaded configuration files'
+      Config.configModified = modification_date(customDir)
       return Config.res
 
    @staticmethod
