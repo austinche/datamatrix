@@ -6,6 +6,8 @@
 # modify these two lines for your configuration
 ARCH=i386
 #ARCH=amd64
+# May need to link libtiff manually on 64-bit: 
+#     ln -s /usr/lib/x86_64-linux-gnu/libtiff.so.4.3
 #ARCH=arm
 SCANUSER=`/usr/bin/whoami`
 #SCANUSER=saned
