@@ -365,6 +365,7 @@ class ScanControl(threading.Thread):
    def enableScan(self):
        self.acquire()
        self.isScanning = True
+       self.event.set()
        self.release()
 
    def run(self):
@@ -383,8 +384,7 @@ class ScanControl(threading.Thread):
                elif len(self.scanners) < origNumScanners:
                    self.findScanners() #look if disconnected
                 #maybe limit to looking 5 times and then wait 50 times before trying again
-               #print "WAIT"
-               self.event.wait() #stop here until event set from serv.py
-               #print "DONE WAIT"
-               self.event.clear() #means that it will wait the next time arount
-           # sleep?
+           #print "WAIT"
+           self.event.wait() #stop here until event set from serv.py
+           #print "DONE WAIT"
+           self.event.clear() #means that it will wait the next time arount
