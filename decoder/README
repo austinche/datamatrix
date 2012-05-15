@@ -1,0 +1,4 @@
+code extracted from libdatamatrix 0.1.0: http://oss.devit.com/datamatrix/
+and libfec 3.0.1: http://www.ka9q.net/code/fec/
+
+python interface to do datamatrix decoding from a matrix of bits

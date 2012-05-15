@@ -1,0 +1,23 @@
+import datamatrix
+print datamatrix.decode([[True, False, False, True, False, False, True, False, True, False],
+                         [True, False, False, True, True, False, False, False, False, False],
+                         [True, False, False, False, True, True, True, False, True, True],
+                         [True, False, False, True, False, False, False, True, True, False],
+                         [False, True, False, False, False, False, False, False, True, False],
+                         [True, False, True, False, True, True, True, False, False, False],
+                         [True, True, False, True, True, False, True, True, False, False],
+                         [True, True, True, True, False, False, True, False, False, True],
+                         [True, False, True, True, True, False, True, True, True, False],
+                         [True, True, True, True, True, False, True, False, False, True],
+                         ]) # 1234567890
+print datamatrix.decode([[True, False, True, True, False, False, True, False, True, False],
+                         [True, False, False, True, True, False, False, False, False, False],
+                         [True, False, True, False, True, True, True, False, True, True],
+                         [True, False, False, True, False, False, False, True, True, False],
+                         [False, True, False, False, False, False, False, False, True, False],
+                         [True, False, True, False, True, True, True, False, False, False],
+                         [True, True, False, True, False, False, True, True, False, True],
+                         [True, True, True, True, False, False, True, False, False, True],
+                         [True, False, True, True, True, False, True, True, True, False],
+                         [True, True, True, True, True, False, True, False, False, True],
+                         ]) # too many bits flipped
