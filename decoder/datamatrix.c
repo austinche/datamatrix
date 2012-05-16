@@ -578,7 +578,6 @@ static PyObject *decode(PyObject *self, PyObject *args)
    if (height < 0)
    {
       PyErr_SetString(PyExc_TypeError, "decode expects a 2D list");
-      Py_DECREF(matrix);
       return NULL;
    }
 
@@ -587,21 +586,18 @@ static PyObject *decode(PyObject *self, PyObject *args)
    if (width < 0)
    {
       PyErr_SetString(PyExc_TypeError, "decode expects a 2D list");
-      Py_DECREF(matrix);
       return NULL;
    }
 
    if (! set_width_height(width, height))
    {
       PyErr_SetString(PyExc_TypeError, "decode: matrix width and height are invalid");
-      Py_DECREF(matrix);
       return NULL;
    }
 
    reg = dm_region_new(width, height);
    if (! reg)
    {
-      Py_DECREF(matrix);
       return NULL;
    }
 
@@ -610,7 +606,6 @@ static PyObject *decode(PyObject *self, PyObject *args)
       row = PyList_GetItem(matrix, y);
       if (PyList_Size(row) != width) {
          PyErr_SetString(PyExc_TypeError, "decode: all list rows must have same length");
-         Py_DECREF(matrix);
          free(reg);
          return NULL;
       }
@@ -629,7 +624,6 @@ static PyObject *decode(PyObject *self, PyObject *args)
       free(str);
    }
 
-   Py_DECREF(matrix);
    free(reg);
 
    return ret;
