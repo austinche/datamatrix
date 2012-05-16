@@ -1,3 +1,4 @@
+import cv
 class Camera:
     def __init__(self):
         self.capture = cv.CaptureFromCAM(0)
@@ -6,7 +7,7 @@ class Camera:
             raise "no camera found"
 
         # first frames are usually bad so we skip a couple
-        for i in range(5):
+        for i in range(3):
             frame = cv.QueryFrame(self.capture)
 
     def __del__(self):

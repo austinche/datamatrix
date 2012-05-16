@@ -6,14 +6,25 @@ import datamatrix
 from params import Params
 
 class BoxScanner:
-    def __init__(self, img):
-        self.image = img
+    def __init__(self):
+        self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
 
-    def scan(self):
-        if not (self.find_box_and_rotate() and self.find_orientation()):
+    def scan(self, image):
+        self.image = image
+
+        if not self.find_box_and_rotate():
+            print "Box not found!"
             return False
         
-        self.decode_codes()
+        if not self.find_orientation():
+            print "Box orientation detection failed!"
+            return False
+        
+        print "Decoding tubes..."
+        (count, empty) = self.decode_codes()
+        print self.codes
+        print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
+
         return True
 
     def decode_code(self, image):
@@ -116,6 +127,9 @@ class BoxScanner:
         except:
             return None
 
+        if len(code) != Params.code_decoded_length:
+            return None
+        
         return code
     
     def edge_type(self, bits, row_range, col_range):
@@ -140,46 +154,63 @@ class BoxScanner:
     def cell_intensity(self, image, rect):
         cv.SetImageROI(image, rect)
         return cv.Sum(image)[0]
-    
+
+    def fill_from_all_points(self, image, x_range, y_range):
+        for i in x_range:
+            for j in y_range:
+                if cv.Get2D(image, j, i)[0] > 0:
+                    cv.FloodFill(image, (i, j), (0), (128), (128))
+
     def decode_codes(self):
         cv.SetImageROI(self.image, self.inner_rect)
 
         # threshold/convert to black/white
         bwimg = cv.CreateImage(cv.GetSize(self.image), 8, 1)
         cv.InRangeS(self.image, (200, 200, 200), (255,255,255), bwimg)
-        
+
         # get rid of the box
-        # we assume box is located on all 4 edges and we flood fill from all
-        # from the maximum point
-        cv.SetImageROI(bwimg, (0, 0, bwimg.width, 1))
-        (_, _, _, top_loc) = cv.MinMaxLoc(bwimg)
-        cv.SetImageROI(bwimg, (0, bwimg.height-1, bwimg.width, 1))
-        (_, _, _, bottom_loc) = cv.MinMaxLoc(bwimg)
-        cv.SetImageROI(bwimg, (0, 0, 1, bwimg.height))
-        (_, _, _, left_loc) = cv.MinMaxLoc(bwimg)
-        cv.SetImageROI(bwimg, (bwimg.height-1, 0, 1, bwimg.height))
-        (_, _, _, right_loc) = cv.MinMaxLoc(bwimg)
-        
-        cv.ResetImageROI(bwimg)
-        cv.FloodFill(bwimg, top_loc, (0, 0, 0), (128, 128, 128), (128, 128, 128))
-        cv.FloodFill(bwimg, (bottom_loc[0], bwimg.height-1), (0, 0, 0), (128, 128, 128), (128, 128, 128))
-        cv.FloodFill(bwimg, left_loc, (0, 0, 0), (128, 128, 128), (128, 128, 128))
-        cv.FloodFill(bwimg, (bwimg.height-1, right_loc[1]), (0, 0, 0), (128, 128, 128), (128, 128, 128))
+        # we assume box is located on all 4 edges and we flood fill from all points
+        self.fill_from_all_points(bwimg, range(bwimg.width), [0]) # top
+        self.fill_from_all_points(bwimg, range(bwimg.width), [bwimg.height-1]) # bottom
+        self.fill_from_all_points(bwimg, [0], range(bwimg.height)) # left
+        self.fill_from_all_points(bwimg, [bwimg.height-1], range(bwimg.height)) # right
 
         # blur it a bit to help contour finding
         smoothed = cv.CreateImage(cv.GetSize(bwimg), 8, 1)
         cv.Smooth(bwimg, smoothed)
 
         count = 0
+        empty = 0
         for c in range(Params.num_cols):
             for r in range(Params.num_rows):
+                # map to box location depending on its orientation
+                if self.tabs_on_bottom:
+                    box_c = Params.num_cols - c - 1
+                    box_r = r
+                else:
+                    box_c = c
+                    box_r = Params.num_rows - r - 1
+
+                # check if already have the code
+                if self.codes[box_r][box_c] != None:
+                    if not self.codes[box_r][box_c]:
+                        empty += 1
+                    count += 1
+                    continue
+                
                 offset_x = c * self.well_size
                 offset_y = r * self.well_size
                 
                 well = cv.GetSubRect(smoothed, (offset_x, offset_y, self.well_size, self.well_size))
+                if cv.CountNonZero(well) < Params.well_empty_threshold:
+                    # call the well empty
+                    self.codes[box_r][box_c] = False
+                    empty += 1
+                    count += 1
+                    continue
+
+                # find the code in the well
                 contours = cv.FindContours(well, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL, offset=(offset_x, offset_y))
-                
-                code = None
                 while contours != None and len(contours) != 0:
                     rect = cv.MinAreaRect2(contours)
 
@@ -189,15 +220,13 @@ class BoxScanner:
                         well_img = self.crop_and_rotate(bwimg, rect)
                         code = self.decode_code(well_img)
                         if code != None:
+                            self.codes[box_r][box_c] = code
                             count += 1
                             break
 
                     contours = contours.h_next()
 
-        print "Decoded images: ", count
-        #cv.ResetImageROI(self.image)
-        #cv.ShowImage("processed", self.image)
-        #cv.WaitKey(0)
+        return (count, empty)
     
     def find_box_and_rotate(self):
         # finds the box and rotate it to a standard orientation
@@ -216,9 +245,10 @@ class BoxScanner:
         (mask, area) = self.fill_find(hsv, rect, Params.box_min_area)
         # if area is too large, then there's likely no box and we selected the entire image
         if mask == None or area > Params.box_max_area * hsv.width * hsv.height:
+            print "Fill find of box failed"
             return False
 
-        cv.Erode(mask, mask, iterations=5) # this helps to reduce noise
+        #cv.Erode(mask, mask) # this helps to reduce noise a bit
         
         # find the bounding rectangle for the filled pixels which should be the box outline
         contours = cv.FindContours(mask, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
@@ -232,6 +262,7 @@ class BoxScanner:
         #angle = rect[2]
 
         if height < Params.min_pixels_per_well * Params.num_rows or width < Params.min_pixels_per_well * Params.num_cols:
+            print "Box size too small to be possible"
             return False
 
         self.image = self.crop_and_rotate(self.image, rect)
@@ -331,7 +362,8 @@ class BoxScanner:
         min_area = min_area_fraction * hsv.width * hsv.height
         for x in xrange(rect[2]):
             for y in xrange(rect[3]):
-                (area, average_color, rect) = cv.FloodFill(hsv, (rect[0] + x, rect[1] + y), (0, 0, 0), (Params.flood_fill_hue, Params.flood_fill_sat, 255), (Params.flood_fill_hue, Params.flood_fill_sat, 255), cv.CV_FLOODFILL_FIXED_RANGE + cv.CV_FLOODFILL_MASK_ONLY, mask)
+                cv.SetZero(mask)
+                (area, average_color, rect) = cv.FloodFill(hsv, (rect[0] + x, rect[1] + y), (255, 255, 255), (Params.flood_fill_hue, Params.flood_fill_sat, 255), (Params.flood_fill_hue, Params.flood_fill_sat, 255), cv.CV_FLOODFILL_FIXED_RANGE + cv.CV_FLOODFILL_MASK_ONLY, mask)
 
                 # check if we likely selected what we wanted
                 if area > min_area:

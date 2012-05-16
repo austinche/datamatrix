@@ -9,6 +9,7 @@ class Params:
     hue_bins = 30
     sat_bins = 32
 
+    code_decoded_length = 10
     matrix_code_size = 12
     edge_cell_threshold = 8 # number of edge cells that have to be correct
     min_pixels_per_cell = 3 # each pixel in the code must be at least 3x3
@@ -16,6 +17,7 @@ class Params:
     code_edge_min_pixels = 0.3 # must be < 0.5 as two edges will have half on/off
     code_squareness_deviation = 10 # number of pixels width/height can be different
     cell_pixel_threshold = 0.4 # fraction of pixels that have to be on for cell to be considered on
+    well_empty_threshold = min_code_size_pixels * 0.3 # well with < this number of on pixels will be considered empty
     
     num_rows = 8
     num_cols = 12
