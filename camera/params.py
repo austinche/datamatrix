@@ -6,34 +6,37 @@ import pickle
 class Params:
     params_file = os.path.join(os.path.dirname(__file__), "params.cfg")
 
+    max_box_scan_attempts = 1000
+    
     hue_bins = 30
     sat_bins = 32
 
+    white_threshold = (150, 150, 150) # in RGB space, this should select both the box and codes on tube
+
     code_decoded_length = 10
     matrix_code_size = 12
-    edge_cell_threshold = 8 # number of edge cells that have to be correct
     min_pixels_per_cell = 3 # each pixel in the code must be at least 3x3
-    min_code_size_pixels = min_pixels_per_cell * min_pixels_per_cell * matrix_code_size * matrix_code_size
-    code_edge_min_pixels = 0.3 # must be < 0.5 as two edges will have half on/off
-    code_squareness_deviation = 10 # number of pixels width/height can be different
-    cell_pixel_threshold = 0.4 # fraction of pixels that have to be on for cell to be considered on
-    well_empty_threshold = min_code_size_pixels * 0.3 # well with < this number of on pixels will be considered empty
-    
+    min_code_size_pixels = min_pixels_per_cell * min_pixels_per_cell * matrix_code_size * matrix_code_size # well with < this number of on pixels will be considered empty
+    code_squareness_deviation = 5 # number of pixels width/height can be different
+    cell_pixel_threshold = 0.5 # fraction of pixels that have to be on for cell to be considered on
+
+    edge_min_pixels_solid = min_pixels_per_cell * matrix_code_size # min pixels for "solid" line of code
+    code_min_pixels_slice = min_pixels_per_cell # min pixels on for any row/col slice through the code. row/col could theoretically only have 1 on pixel
+
     num_rows = 8
     num_cols = 12
 
-    flood_fill_hue = 50
-    flood_fill_sat = 50
-
-    box_min_area = 0.20
-    box_max_area = 0.70
-    tab_min_area = 0.08
+    box_max_area = 0.80 # box should not take up more than this fraction of total image
+    box_fill_threshold = (20, 20, 20)
+    
+    tab_histogram = None
+    tab_pixel_cutoff = 0.02
+    histogram_threshold = 15
 
     min_pixels_per_well = 100
     
     # no longer using box histogram to detect the box
     #box_histogram = None
-    tab_histogram = None
     
     @staticmethod
     def save():
