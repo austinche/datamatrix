@@ -30,7 +30,7 @@ class CameraThread(threading.Thread):
         self.box = None
         self.attempt_count = 0
         self.running = True
-        
+
     def run(self):
         while self.running:
             if self.box != None and self.attempt_count < Params.max_box_scan_attempts:

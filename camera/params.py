@@ -26,6 +26,11 @@ class Params:
     num_rows = 8
     num_cols = 12
 
+    # note these are BGR colors
+    annotate_empty_color = (255, 0, 0) # blue
+    annotate_present_color = (0, 255, 0) # green
+    annotate_not_decoded = (0, 0, 255) # red
+    
     box_max_area = 0.80 # box should not take up more than this fraction of total image
     box_fill_threshold = (20, 20, 20)
     

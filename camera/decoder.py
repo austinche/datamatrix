@@ -9,6 +9,8 @@ from params import Params
 class BoxScanner:
     def __init__(self):
         self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
+        self.image = None
+        self.info_image = None
 
     def write_code_csv(self, output):
         # write code in csv form with well (e.g. A1-H12) followed by barcode and then status
@@ -25,18 +27,23 @@ class BoxScanner:
                 else:
                     writer.writerow([well, self.codes[r][c], "OK"])
 
+    def last_image(self):
+        return self.info_image
+
     def scan(self, image):
         self.image = image
+        self.info_image = image # leave the info image as the original until we know we've detected a box
 
         if not self.find_box_and_rotate():
             print "Box not found!"
             return False
 
-        cv.SaveImage("/tmp/rotated.tif", self.image)
         if not self.find_orientation():
             print "Box orientation detection failed!"
             return False
-        
+
+        self.info_image = self.image
+
         (count, empty) = self.decode_codes()
         print self.codes
         print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
@@ -126,14 +133,12 @@ class BoxScanner:
 
         # check if width/height are reasonable
         if width < 0 or height < 0 or abs(width - height) > Params.code_squareness_deviation:
-            print "size is bad"
             return None
 
         pixel_width = 1.0 * width / Params.matrix_code_size
         pixel_height = 1.0 * height / Params.matrix_code_size
 
         if min(pixel_width, pixel_height) < Params.min_pixels_per_cell:
-            print "failed size check"
             return None
 
         ipixel_width = int(pixel_width)
@@ -170,7 +175,6 @@ class BoxScanner:
         try:
             code = datamatrix.decode(bits)
         except:
-            print "datamatrix decoding failed:", sys.exc_value
             return None
 
         if len(code) != Params.code_decoded_length:
@@ -211,6 +215,12 @@ class BoxScanner:
                 if cv.Get2D(image, j, i)[0] > 0:
                     cv.FloodFill(image, (i, j), (0, 0, 0), Params.box_fill_threshold, Params.box_fill_threshold)
 
+    def annotate_image(self, rect, color):
+        # annotate a particular well with some color rectangle
+        # we add some margin around it so they don't overlap with nearby well
+        cv.SetImageROI(self.image, self.inner_rect)
+        cv.Rectangle(self.image, (rect[0]+25, rect[1]+25), (rect[0]+rect[2]-25, rect[1]+rect[3]-25), color, 25)
+                     
     def decode_codes(self):
         cv.SetImageROI(self.image, self.inner_rect)
 
@@ -242,26 +252,33 @@ class BoxScanner:
                     box_c = c
                     box_r = Params.num_rows - r - 1
 
+                offset_x = c * self.well_size
+                offset_y = r * self.well_size
+                well_rect = (offset_x, offset_y, self.well_size, self.well_size)
+
                 # check if already have the code
                 if self.codes[box_r][box_c] != None:
                     if not self.codes[box_r][box_c]:
+                        self.annotate_image(well_rect, Params.annotate_empty_color)
                         empty += 1
+                    else:
+                        self.annotate_image(well_rect, Params.annotate_present_color)                        
                     count += 1
                     continue
                 
-                offset_x = c * self.well_size
-                offset_y = r * self.well_size
                 
-                well = cv.GetSubRect(search_img, (offset_x, offset_y, self.well_size, self.well_size))
+                well = cv.GetSubRect(search_img, well_rect)
                 if cv.CountNonZero(well) < Params.min_code_size_pixels:
                     # call the well empty
                     self.codes[box_r][box_c] = False
                     empty += 1
                     count += 1
+                    self.annotate_image(well_rect, Params.annotate_empty_color)
                     continue
 
                 # find the code in the well
                 contours = cv.FindContours(well, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL, offset=(offset_x, offset_y))
+                success = False
                 while contours != None and len(contours) != 0:
                     rect = cv.MinAreaRect2(contours)
 
@@ -274,9 +291,13 @@ class BoxScanner:
                         if code != None:
                             self.codes[box_r][box_c] = code
                             count += 1
+                            self.annotate_image(well_rect, Params.annotate_present_color)
+                            success = True
                             break
 
                     contours = contours.h_next()
+                if not success:
+                    self.annotate_image(well_rect, Params.annotate_not_decoded)
 
         return (count, empty)
     
@@ -289,7 +310,6 @@ class BoxScanner:
         # find the bounding rectangle for the on pixels which should be the box outline
         contours = cv.FindContours(bwimg, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
         if len(contours) == 0:
-            print "No box found: no contours"
             return False
         (max_contour, max_contour_area) = self.max_contour_area(contours)
         rect = cv.MinAreaRect2(max_contour)
@@ -300,14 +320,12 @@ class BoxScanner:
 
         # if area is too large, then there's likely no box and we selected the entire image
         if height * width > Params.box_max_area * bwimg.width * bwimg.height:
-            print "Finding box failed: selected too much"
             return False
             
         if height > width:
             (width, height) = rect[1]
 
         if height < Params.min_pixels_per_well * Params.num_rows or width < Params.min_pixels_per_well * Params.num_cols:
-            print "Box size too small to be possible"
             return False
 
         self.image = self.crop_and_rotate(self.image, rect)
@@ -346,7 +364,6 @@ class BoxScanner:
             left = tl
             right = tr
         else:
-            print "Box tabs not found", tl_count, tr_count, bl_count, br_count, cutoff
             return False # no tabs found, fail as we cannot determine box orientation
 
         # find edge of tab and use as edge of wells
@@ -370,14 +387,12 @@ class BoxScanner:
         self.well_size = (right_border - left_border) / Params.num_cols
 
         if self.well_size < Params.min_pixels_per_well:
-            print "Well size too small"            
             return False
 
         # to remove the top and bottom borders, we assume that the entirety of the box there is displayed
         # and they are equal sizes and that all wells are perfectly square
         box_height = self.well_size * Params.num_rows
         if box_height > self.image.height:
-            print "Box size too small"
             return False
 
         top_border = (self.image.height - box_height) / 2
