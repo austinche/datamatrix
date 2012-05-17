@@ -1,4 +1,3 @@
-import sys
 import cv
 import math
 import csv
