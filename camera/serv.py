@@ -8,7 +8,7 @@ INTERFACE:
 replace {command} with:       in order to:
 
       /cam                     start a scan and show image of current camera
-      /                        view CSV of most-recently decoded 
+      /                        view CSV of most-recently decoded
 """
 
 from SocketServer import ThreadingMixIn
@@ -43,17 +43,31 @@ class MyHandler(BaseHTTPRequestHandler):
                     image = MyHandler.box.last_image()
                     if image == None:
                         print "no image?"
+                        time.sleep(0.5)
                         continue
-                    
+
                     # shrink image
                     cv.ResetImageROI(image)
-                    shrink = cv.CreateImage((image.width / 8, image.height / 8), image.depth, image.nChannels)
+
+                    # image can be different sizes depending on if it's been cropped yet
+                    # we shrink to fixed size and add a caption
+                    shrink = cv.CreateImage((320, 280), image.depth, image.nChannels)
+                    cv.SetImageROI(shrink, (0, 0, 320, 240))
                     cv.Resize(image, shrink)
-                    
+
+                    # add caption text
+                    cv.SetImageROI(shrink, (0, 240, 320, 40))
+                    cv.Set(shrink, (255, 255, 255))
+                    (count, empty) = MyHandler.box.decode_info
+                    cv.PutText(shrink, "Empty: %d " % empty, (0, 20), MyHandler.font, (255, 0, 0))
+                    cv.PutText(shrink, "Codes: %d " % (count - empty), (100, 20), MyHandler.font, (0, 255, 0))
+                    cv.PutText(shrink, "Unknown: %d " % (96 - count), (200, 20), MyHandler.font, (0, 0, 255))
+
                     # switch from BGR to RGB
+                    cv.ResetImageROI(shrink)
                     cv.CvtColor(shrink, shrink, cv.CV_BGR2RGB)
-                    
-                    # use PIL to resize/make jpeg
+
+                    # use PIL to make jpeg
                     im = Image.fromstring("RGB", cv.GetSize(shrink), shrink.tostring())
                     f = StringIO.StringIO()
                     im.save(f, "JPEG")
@@ -66,31 +80,34 @@ class MyHandler(BaseHTTPRequestHandler):
                     self.wfile.write(data)
                     time.sleep(0.5)
                 MyHandler.camera.stop_box()
-                
+
             elif self.path.strip('/') == '':
                 self.send_response(200)
                 self.send_header('Content-type','text/plain')
                 self.end_headers()
                 codes = MyHandler.box.write_code_csv(self.wfile)
- 
+
             else:
                 self.send_error(404, 'File not found')
- 
-        except:
+
+        except Exception, e:
+            print "Exception in server thread"
+            print e
             MyHandler.camera.stop_box()
-            
+
 def main():
     MyHandler.box = BoxScanner()
     MyHandler.camera = camera.CameraThread()
     MyHandler.camera.start()
-    
+    MyHandler.font = cv.InitFont(cv.CV_FONT_HERSHEY_PLAIN, 1.0, 1.0)
+
     server = ThreadingHTTPServer(('', PORT), MyHandler)
     print 'started httpserver...'
 
     running = True
     try:
         while running:
-            server.handle_request() # blocks until request 
+            server.handle_request() # blocks until request
     except KeyboardInterrupt:
         print '^C received'
     finally:

@@ -10,6 +10,7 @@ class BoxScanner:
         self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
         self.image = None
         self.info_image = None
+        self.decode_info = (0, 0)
 
     def write_code_csv(self, output):
         # write code in csv form with well (e.g. A1-H12) followed by barcode and then status
@@ -29,35 +30,40 @@ class BoxScanner:
     def last_image(self):
         return self.info_image
 
+    def current_decode_stats(self):
+        return self.decode_info
+
     def scan(self, image):
         # returns count of wells decoded
-        
+
         self.image = image
-        self.info_image = image # leave the info image as the original until we know we've detected a box
 
         if not self.find_box_and_rotate():
             print "Box not found!"
+            self.info_image = image
             return 0
 
         if not self.find_orientation():
             print "Box orientation detection failed!"
+            self.info_image = image
             return 0
 
-        self.info_image = self.image
+        self.decode_info = self.decode_codes()
+        (count, empty) = self.decode_info
+        self.info_image = self.image # for consistency, we need to set this image after the above decoding annotates everything
 
-        (count, empty) = self.decode_codes()
         print self.codes
         print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
 
         return count
-        
+
     def decode_code(self, image):
         # image should contain a single code
         # The code should be rotated so the edges are horizontal/vertical
         # Image should be mostly cropped but there may still be some extra margins
 
         # find the L corner by finding the intersection of the brightest column and row
-        
+
         col_proj = cv.CreateMat(1, image.width, cv.CV_32FC1)
         cv.Reduce(image, col_proj, 0, cv.CV_REDUCE_AVG)
         row_proj = cv.CreateMat(image.height, 1, cv.CV_32FC1)
@@ -71,13 +77,13 @@ class BoxScanner:
         # try to find the edges of the code
         # We start from the L-corner and expand the two L edges out as long as the row/col is bright
         # We then expand the other two edges while the brightness of the row/col is good
-        
+
         if l_corner_x < image.width / 2:
             if l_corner_y < image.height / 2:
                 # L-corner in top left
                 corner_top = True
                 corner_left = True
-                
+
                 top = self.find_horizontal_edge(image, (l_corner_x, image.width-1), (l_corner_y, 0), Params.edge_min_pixels_solid)
                 left = self.find_vertical_edge(image, (l_corner_x, 0), (top, image.height-1), Params.edge_min_pixels_solid)
 
@@ -89,7 +95,7 @@ class BoxScanner:
                 # L-corner in bottom left
                 corner_top = False
                 corner_left = True
-                
+
                 bottom = self.find_horizontal_edge(image, (l_corner_x, image.width-1), (l_corner_y, image.height-1), Params.edge_min_pixels_solid)
                 left = self.find_vertical_edge(image, (l_corner_x, 0), (0, bottom), Params.edge_min_pixels_solid)
 
@@ -111,12 +117,12 @@ class BoxScanner:
 
                 bottom = self.find_horizontal_edge(image, (right-size+1, right), (top, image.height-1), Params.code_min_pixels_slice)
                 left = self.find_vertical_edge(image, (right, 0), (top, bottom), Params.code_min_pixels_slice)
-                
+
             else:
                 # L-corner in bottom right
                 corner_top = False
                 corner_left = False
-                
+
                 bottom = self.find_horizontal_edge(image, (0, l_corner_x), (l_corner_y, image.height-1), Params.edge_min_pixels_solid)
                 right = self.find_vertical_edge(image, (l_corner_x, image.width-1), (0, bottom), Params.edge_min_pixels_solid)
 
@@ -164,7 +170,7 @@ class BoxScanner:
                 else:
                     mapped_c = c
                     mapped_r = r
-                    
+
                 rect = (int(math.ceil(left + mapped_c * pixel_width)), int(math.ceil(top + mapped_r * pixel_height)), ipixel_width, ipixel_height)
                 intensity = self.cell_intensity(image, rect)
                 rowbits.append(intensity > threshold)
@@ -207,7 +213,7 @@ class BoxScanner:
                 return last
             last = x
         return last
-    
+
     def cell_intensity(self, image, rect):
         cv.SetImageROI(image, rect)
         return cv.Sum(image)[0]
@@ -223,12 +229,14 @@ class BoxScanner:
         # we add some margin around it so they don't overlap with nearby well
         cv.SetImageROI(self.image, self.inner_rect)
         cv.Rectangle(self.image, (rect[0]+25, rect[1]+25), (rect[0]+rect[2]-25, rect[1]+rect[3]-25), color, 25)
-                     
+
     def decode_codes(self):
         # use black white thresholded image
+
         cv.SetImageROI(self.image, self.inner_rect)
+
         image = self.threshold(self.image)
-        
+
         # get rid of the box
         # we assume box is located on all 4 edges and we flood fill from all points
         self.fill_from_all_points(image, range(image.width), [0]) # top
@@ -264,11 +272,11 @@ class BoxScanner:
                         self.annotate_image(well_rect, Params.annotate_empty_color)
                         empty += 1
                     else:
-                        self.annotate_image(well_rect, Params.annotate_present_color)                        
+                        self.annotate_image(well_rect, Params.annotate_present_color)
                     count += 1
                     continue
-                
-                
+
+
                 well = cv.GetSubRect(search_img, well_rect)
                 if cv.CountNonZero(well) < Params.min_code_size_pixels:
                     # call the well empty
@@ -302,13 +310,14 @@ class BoxScanner:
                     self.annotate_image(well_rect, Params.annotate_not_decoded)
 
         return (count, empty)
-    
+
     def find_box_and_rotate(self):
         # finds the box and rotate it to a standard orientation
-        
+
         bwimg = self.threshold(self.image)
         cv.Erode(bwimg, bwimg) # this helps to reduce noise a bit
-        
+        cv.Dilate(bwimg, bwimg, iterations=3) # this helps findcontours work better
+
         # find the bounding rectangle for the on pixels which should be the box outline
         contours = cv.FindContours(bwimg, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
         if len(contours) == 0:
@@ -323,7 +332,7 @@ class BoxScanner:
         # if area is too large, then there's likely no box and we selected the entire image
         if height * width > Params.box_max_area * bwimg.width * bwimg.height:
             return False
-            
+
         if height > width:
             (width, height) = rect[1]
 
@@ -331,68 +340,93 @@ class BoxScanner:
             return False
 
         self.image = self.crop_and_rotate(self.image, rect)
+
         return True
-        
+
     def find_orientation(self):
         # find the box tabs to determine orientation
-
-        bw_image = self.threshold(self.image) # threshold/convert to black/white
-
-        # the black/white image should have the box outline bright
-        # We invert it and use it as a mask to help find the tabs which are orange
-        cv.Not(bw_image, bw_image)
-        
-        masked = cv.CreateImage(cv.GetSize(self.image), 8, 3)
-        cv.Copy(self.image, masked, bw_image)
-
-        tabs = cv.CreateImage(cv.GetSize(self.image), 8, 1)
-        cv.InRangeS(masked, Params.tab_color_low, Params.tab_color_high, tabs)
 
         # this is maximum size of a single well as it doesn't include the border
         width = self.image.width / Params.num_cols
 
-        right_border = self.image.width - width
-        
+        right_border = self.image.width - width - 1
+
+        size = (width, self.image.height)
+
         # if the image includes the full box, the extra horizontal width is about equal to one well width on each side
         # so the following image extracts will definitely include the tabs if they exist
+        # call the tabs location based on which quadrants have the maximal pixel count with tab color
+        # do the left and right sides separately
+        # then we split into top and bottom
+
+        left_image = cv.CreateImage(size, 8, 3)
+        right_image = cv.CreateImage(size, 8, 3)
+        left_tabs = cv.CreateImage(size, 8, 1)
+        right_tabs = cv.CreateImage(size, 8, 1)
+
+        # left
+        cv.SetImageROI(self.image, (0, 0, width, self.image.height))
+        cv.CvtColor(self.image, left_image, cv.CV_BGR2HSV)
+        cv.InRangeS(left_image, Params.tab_color_low, Params.tab_color_high, left_tabs)
+
+        # right
+        cv.SetImageROI(self.image, (right_border, 0, width, self.image.height))
+        cv.CvtColor(self.image, right_image, cv.CV_BGR2HSV)
+        cv.InRangeS(right_image, Params.tab_color_low, Params.tab_color_high, right_tabs)
 
         middle = self.image.height / 2
-        
-        cv.SetImageROI(tabs, (0, 0, width, middle))
-        tl_count = cv.CountNonZero(tabs)
-        cv.SetImageROI(tabs, (0, middle, width, middle))
-        bl_count = cv.CountNonZero(tabs)
-        cv.SetImageROI(tabs, (right_border, 0, width, middle))
-        tr_count = cv.CountNonZero(tabs)
-        cv.SetImageROI(tabs, (right_border, middle, width, middle))
-        br_count = cv.CountNonZero(tabs)
 
-        cutoff = Params.tab_pixel_cutoff
-        if tl_count < cutoff and tr_count < cutoff and bl_count > cutoff and br_count > cutoff:
+        cv.SetImageROI(left_tabs, (0, 0, width, middle))
+        tl = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Reduce(left_tabs, tl, 0, cv.CV_REDUCE_SUM)
+
+        cv.SetImageROI(left_tabs, (0, middle, width, middle))
+        bl = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Reduce(left_tabs, bl, 0, cv.CV_REDUCE_SUM)
+
+        cv.SetImageROI(right_tabs, (0, 0, width, middle))
+        tr = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Reduce(right_tabs, tr, 0, cv.CV_REDUCE_SUM)
+
+        cv.SetImageROI(right_tabs, (0, middle, width, middle))
+        br = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Reduce(right_tabs, br, 0, cv.CV_REDUCE_SUM)
+
+        left_diff = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Sub(tl, bl, left_diff)
+
+        right_diff = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.Sub(tr, br, right_diff)
+
+        # positive value means more pixels on top, negative means more on bottom
+        left_sum = cv.Sum(left_diff)[0]
+        right_sum = cv.Sum(right_diff)[0]
+
+        (_, _, left_min_loc, left_max_loc) = cv.MinMaxLoc(left_diff)
+        (_, _, right_min_loc, right_max_loc) = cv.MinMaxLoc(right_diff)
+
+        if left_sum < 0 and right_sum < 0:
             self.tabs_on_bottom = True
-            left = (0, middle, width, middle)
-            right = (right_border, middle, width, middle)
-        elif tl_count > cutoff and tr_count > cutoff and bl_count < cutoff and br_count < cutoff:
-            self.tabs_on_bottom = False            
-            left = (0, 0, width, middle)
-            right = (right_border, 0, width, middle)
+            left_border = left_min_loc[0]
+            right_border_offset = right_min_loc[0]
+            sign = -1
+        elif left_sum > 0 and right_sum > 0:
+            self.tabs_on_bottom = False
+            left_border = left_max_loc[0]
+            right_border_offset = right_max_loc[0]
+            sign = 1
         else:
             return False # no tabs found, fail as we cannot determine box orientation
 
         # find edge of tab and use as edge of wells
-        left_border = 0
-        dst = cv.CreateMat(1, width, cv.CV_32FC1)
-        cv.SetImageROI(tabs, left)
-        cv.Reduce(tabs, dst, 0, cv.CV_REDUCE_SUM)
-        for i in xrange(dst.width-1, -1, -1):
-            if cv.Get1D(dst, i)[0] > 0:
+        # we start from the brightest point and walk out
+        for i in xrange(left_border, width, 1):
+            if cmp(cv.Get1D(left_diff, i)[0], 0) != sign:
                 left_border = i
                 break
 
-        cv.SetImageROI(tabs, right)            
-        cv.Reduce(tabs, dst, 0, cv.CV_REDUCE_SUM)
-        for i in xrange(dst.width):
-            if cv.Get1D(dst, i)[0] > 0:
+        for i in xrange(right_border_offset, -1, -1):
+            if cmp(cv.Get1D(right_diff, i)[0], 0) != sign:
                 right_border = right_border + i
                 break
 
@@ -412,7 +446,12 @@ class BoxScanner:
         top_border = (self.image.height - box_height) / 2
         bottom_border = box_height + top_border
 
-        self.inner_rect = (left_border, top_border, right_border-left_border, bottom_border-top_border)
+        width = right_border - left_border + 1
+        height = bottom_border - top_border + 1
+        self.inner_rect = (left_border, top_border, width, height)
+
+        # annotate the inner rect
+        cv.Rectangle(self.image, (left_border, top_border), (right_border, bottom_border), Params.annotate_outside, 10)
         return True
 
     def max_contour_area(self, contours):
@@ -426,13 +465,12 @@ class BoxScanner:
             contours = contours.h_next()
         return (max_contour, max_contour_area)
 
-
-    def threshold(self, image):
+    def threshold(self, image, threshold=Params.white_threshold):
         # threshold/convert color image to black/white
         bwimg = cv.CreateImage(cv.GetSize(image), 8, 1)
-        cv.InRangeS(image, Params.white_threshold, (255,255,255), bwimg)
+        cv.InRangeS(image, threshold, (255,255,255), bwimg)
         return bwimg
-                
+
     def crop_and_rotate(self, image, rect):
         # rect should be a RotatedRect as returned by MinAreaRect2
         # we make the width of the new image be the longer side
@@ -442,7 +480,7 @@ class BoxScanner:
             (width, height) = rect[1]
         width = int(width)
         height = int(height)
-        
+
         points = cv.BoxPoints(rect)
         # the points are in clockwise order around rectangle
         # figure out which is top-left, bottom-left, top-right
@@ -455,11 +493,11 @@ class BoxScanner:
             tl = points[1]
             tr = points[2]
             bl = points[0]
-                
+
         # rotate/deskew the box
         trans = cv.CreateMat(2, 3, cv.CV_32FC1)
         cv.GetAffineTransform((bl, tl, tr), ((0, height), (0,0), (width, 0)), trans)
         rotated = cv.CreateImage((width, height), image.depth, image.nChannels)
         cv.WarpAffine(image, rotated, trans)
         return rotated
-        
+
