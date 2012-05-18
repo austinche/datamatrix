@@ -17,6 +17,7 @@ from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 PORT=3333
 
 import cv
+import time
 import Image
 import StringIO
 
@@ -38,7 +39,7 @@ class MyHandler(BaseHTTPRequestHandler):
                 self.send_header('Content-type', 'multipart/x-mixed-replace;boundary=informs')
                 self.wfile.write('--informs\r\n')
                 self.end_headers()
-                for count in range(1000): # limit number of images to show before stopping
+                for count in range(100): # limit number of images to show before stopping
                     image = MyHandler.box.last_image()
                     if image == None:
                         print "no image?"
@@ -49,7 +50,7 @@ class MyHandler(BaseHTTPRequestHandler):
                     im = Image.fromstring("RGB", cv.GetSize(image), image.tostring())
                     (r, g, b) = im.split()
                     im = Image.merge("RGB", (b, g, r))
-                    im.thumbnail((640, 480))
+                    im.thumbnail((320, 240))
                     f = StringIO.StringIO()
                     im.save(f, "JPEG")
                     data = f.getvalue()
@@ -57,8 +58,10 @@ class MyHandler(BaseHTTPRequestHandler):
                     self.wfile.write('--informs\r\n')
                     self.send_header('Content-type', 'image/jpeg')
                     self.send_header('Content-length', f.len)
-                    self.end_headers()                    
+                    self.end_headers()
                     self.wfile.write(data)
+                    time.sleep(0.5)
+                MyHandler.camera.stop_box()
                 
             elif self.path.strip('/') == '':
                 self.send_response(200)
@@ -69,9 +72,9 @@ class MyHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error(404, 'File not found')
  
-        except IOError:
-            self.send_error(404, 'File not found')
- 
+        except:
+            MyHandler.camera.stop_box()
+            
 def main():
     MyHandler.box = BoxScanner()
     MyHandler.camera = camera.CameraThread()
@@ -88,7 +91,7 @@ def main():
         print '^C received'
     finally:
         print 'Shutting down server'
-        MyHandler.camera.stop()
+        MyHandler.camera.exit()
         server.socket.close()
 
 if __name__ == '__main__':

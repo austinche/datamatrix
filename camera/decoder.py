@@ -185,24 +185,29 @@ class BoxScanner:
     def find_horizontal_edge(self, image, (x_start, x_end), (y_start, y_end), threshold):
         # goes from [y_start..y_end] and counts the num of pixels on between [x_start..x_end] for each row
         # returns the last row that has a count > the threshold
+        # this has to be careful to work when y_start == y_end
         direction = 1 if y_start < y_end else -1
         width = x_end - x_start + 1
+        last = y_start
         for y in range(y_start, y_end + direction, direction):
             cv.SetImageROI(image, (x_start, y, width, 1))
             if cv.CountNonZero(image) < threshold:
-                return y - direction # return the previous index
-        return y_end
+                return last
+            last = y
+        return last
 
     def find_vertical_edge(self, image, (x_start, x_end), (y_start, y_end), threshold):
         # same as find_horizontal_edge but in vertical direction
         direction = 1 if x_start < x_end else -1
         height = y_end - y_start + 1
         cv.SetImageROI(image, (x_start, y_start, 1, height))
+        last = x_start
         for x in range(x_start, x_end + direction, direction):
             cv.SetImageROI(image, (x, y_start, 1, height))
             if cv.CountNonZero(image) < threshold:
-                return x - direction # return the previous index
-        return x_end
+                return last
+            last = x
+        return last
     
     def cell_intensity(self, image, rect):
         cv.SetImageROI(image, rect)
@@ -221,11 +226,10 @@ class BoxScanner:
         cv.Rectangle(self.image, (rect[0]+25, rect[1]+25), (rect[0]+rect[2]-25, rect[1]+rect[3]-25), color, 25)
                      
     def decode_codes(self):
+        # use black white thresholded image
         cv.SetImageROI(self.image, self.inner_rect)
-
-        # threshold/convert to black/white
         image = self.threshold(self.image)
-
+        
         # get rid of the box
         # we assume box is located on all 4 edges and we flood fill from all points
         self.fill_from_all_points(image, range(image.width), [0]) # top
@@ -235,7 +239,7 @@ class BoxScanner:
 
         # process it a bit to help contour finding
         search_img = cv.CloneImage(image)
-            
+
         cv.Erode(search_img, search_img) # remove background noise
         cv.Dilate(search_img, search_img, iterations=3) # make the code image brighter and edges bigger
 
@@ -329,55 +333,67 @@ class BoxScanner:
 
         self.image = self.crop_and_rotate(self.image, rect)
         return True
-    
+        
     def find_orientation(self):
         # find the box tabs to determine orientation
 
-        hsv = cv.CreateImage(cv.GetSize(self.image), 8, 3)
-        cv.CvtColor(self.image, hsv, cv.CV_BGR2HSV)
+        bw_image = self.threshold(self.image) # threshold/convert to black/white
+
+        # the black/white image should have the box outline bright
+        # We invert it and use it as a mask to help find the tabs which are orange
+        cv.Not(bw_image, bw_image)
+        
+        masked = cv.CreateImage(cv.GetSize(self.image), 8, 3)
+        cv.Copy(self.image, masked, bw_image)
+
+        tabs = cv.CreateImage(cv.GetSize(self.image), 8, 1)
+        cv.InRangeS(masked, Params.tab_color_low, Params.tab_color_high, tabs)
 
         # this is maximum size of a single well as it doesn't include the border
-        width = hsv.width / Params.num_cols
+        width = self.image.width / Params.num_cols
 
-        right_border = hsv.width - width
+        right_border = self.image.width - width
         
         # if the image includes the full box, the extra horizontal width is about equal to one well width on each side
         # so the following image extracts will definitely include the tabs if they exist
-        middle = self.image.height / 2
-        tl = self.histogram_search(hsv, (0, 0, width, middle), Params.tab_histogram)
-        bl = self.histogram_search(hsv, (0, middle, width, middle), Params.tab_histogram)
-        tr = self.histogram_search(hsv, (right_border, 0, width, middle), Params.tab_histogram)
-        br = self.histogram_search(hsv, (right_border, middle, width, middle), Params.tab_histogram)
 
-        cutoff = width * middle * Params.tab_pixel_cutoff
-        tl_count = cv.CountNonZero(tl)
-        bl_count = cv.CountNonZero(bl)
-        tr_count = cv.CountNonZero(tr)
-        br_count = cv.CountNonZero(br)
+        middle = self.image.height / 2
+        
+        cv.SetImageROI(tabs, (0, 0, width, middle))
+        tl_count = cv.CountNonZero(tabs)
+        cv.SetImageROI(tabs, (0, middle, width, middle))
+        bl_count = cv.CountNonZero(tabs)
+        cv.SetImageROI(tabs, (right_border, 0, width, middle))
+        tr_count = cv.CountNonZero(tabs)
+        cv.SetImageROI(tabs, (right_border, middle, width, middle))
+        br_count = cv.CountNonZero(tabs)
+
+        cutoff = Params.tab_pixel_cutoff
         if tl_count < cutoff and tr_count < cutoff and bl_count > cutoff and br_count > cutoff:
             self.tabs_on_bottom = True
-            left = bl
-            right = br
+            left = (0, middle, width, middle)
+            right = (right_border, middle, width, middle)
         elif tl_count > cutoff and tr_count > cutoff and bl_count < cutoff and br_count < cutoff:
             self.tabs_on_bottom = False            
-            left = tl
-            right = tr
+            left = (0, 0, width, middle)
+            right = (right_border, 0, width, middle)
         else:
             return False # no tabs found, fail as we cannot determine box orientation
 
         # find edge of tab and use as edge of wells
         left_border = 0
-        dst = cv.CreateMat(1, left.width, cv.CV_32FC1)
-        cv.Reduce(left, dst, 0, cv.CV_REDUCE_SUM)
-        avg = cv.Avg(dst)
+        dst = cv.CreateMat(1, width, cv.CV_32FC1)
+        cv.SetImageROI(tabs, left)
+        cv.Reduce(tabs, dst, 0, cv.CV_REDUCE_SUM)
         for i in xrange(dst.width-1, -1, -1):
-            if cv.Get1D(dst, i) > avg:
+            if cv.Get1D(dst, i)[0] > 0:
                 left_border = i
                 break
-        cv.Reduce(right, dst, 0, cv.CV_REDUCE_SUM)
-        avg = cv.Avg(dst)        
+
+        cv.SetImageROI(tabs, right)            
+        cv.Reduce(tabs, dst, 0, cv.CV_REDUCE_SUM)
         for i in xrange(dst.width):
-            if cv.Get1D(dst, i) > avg:
+            if cv.Get1D(dst, i)[0] > 0:
                 right_border = right_border + i
                 break
 
@@ -399,24 +415,6 @@ class BoxScanner:
 
         self.inner_rect = (left_border, top_border, right_border-left_border, bottom_border-top_border)
         return True
-
-    def histogram_search(self, hsv, rect, histogram):
-        cv.SetImageROI(hsv, rect)
-        hue = cv.CreateImage(cv.GetSize(hsv), cv.IPL_DEPTH_8U, 1)
-        sat = cv.CreateImage(cv.GetSize(hsv), cv.IPL_DEPTH_8U, 1)
-
-        cv.SetImageCOI(hsv, 1)
-        cv.Copy(hsv, hue)
-        cv.SetImageCOI(hsv, 2)
-        cv.Copy(hsv, sat)
-
-        cv.SetImageCOI(hsv, 0)
-        cv.ResetImageROI(hsv)
-        
-        match = cv.CreateImage(cv.GetSize(hue), 8, 1)
-        cv.CalcBackProject([hue, sat], match, histogram)
-        cv.Threshold(match, match, Params.histogram_threshold, 255, cv.CV_THRESH_BINARY)        
-        return match
 
     def max_contour_area(self, contours):
         max_contour = None

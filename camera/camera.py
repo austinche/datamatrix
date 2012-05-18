@@ -1,7 +1,7 @@
 import cv
+import time
 import threading
 
-from params import Params
 from decoder import BoxScanner
 
 class Camera:
@@ -31,7 +31,6 @@ class Camera:
     
 class CameraThread(threading.Thread):
     def __init__(self):
-        Params.load()
         threading.Thread.__init__(self)
         self.event = threading.Event()
         self.camera = Camera()
@@ -53,15 +52,20 @@ class CameraThread(threading.Thread):
                     done = self.box.scan(frame)
                     if done:
                         self.box = None
+
+                    time.sleep(Params.camera_sleep_between_pictures)
                 else:
                     self.event.wait()
                     self.event.clear()
             except Exception, e:
                 print e
 
-    def stop(self):
+    def exit(self):
         self.running = False
         self.event.set()
+        
+    def stop_box(self):
+        self.box = None
         
     def start_box(self, box):
         self.box = box
