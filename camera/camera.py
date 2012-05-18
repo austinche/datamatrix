@@ -3,6 +3,7 @@ import time
 import threading
 
 from decoder import BoxScanner
+from params import Params
 
 class Camera:
     def __init__(self):
@@ -49,11 +50,13 @@ class CameraThread(threading.Thread):
                     if not frame:
                         print "bad frame from camera"
                         continue
-                    done = self.box.scan(frame)
-                    if done:
+                    count = self.box.scan(frame)
+                    if count == 96:
                         self.box = None
-
-                    time.sleep(Params.camera_sleep_between_pictures)
+                    elif count == 0:
+                        time.sleep(Params.camera_sleep_no_box)
+                    else:
+                        time.sleep(Params.camera_sleep_missing_codes)
                 else:
                     self.event.wait()
                     self.event.clear()

@@ -30,16 +30,18 @@ class BoxScanner:
         return self.info_image
 
     def scan(self, image):
+        # returns count of wells decoded
+        
         self.image = image
         self.info_image = image # leave the info image as the original until we know we've detected a box
 
         if not self.find_box_and_rotate():
             print "Box not found!"
-            return False
+            return 0
 
         if not self.find_orientation():
             print "Box orientation detection failed!"
-            return False
+            return 0
 
         self.info_image = self.image
 
@@ -47,10 +49,7 @@ class BoxScanner:
         print self.codes
         print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
 
-        if count == Params.num_cols * Params.num_rows:
-            return True
-        else:
-            return False
+        return count
         
     def decode_code(self, image):
         # image should contain a single code

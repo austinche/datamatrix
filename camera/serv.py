@@ -29,6 +29,7 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 
 class MyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        MJPEG_BOUNDARY="a34e78adc034c428d4a35c1831db7bf8" # random string
         try:
             if self.path.startswith("/cam"):
                 # stream via motion JPEG
@@ -36,26 +37,29 @@ class MyHandler(BaseHTTPRequestHandler):
                 MyHandler.box = BoxScanner()
                 MyHandler.camera.start_box(MyHandler.box)
                 self.send_response(200)
-                self.send_header('Content-type', 'multipart/x-mixed-replace;boundary=informs')
-                self.wfile.write('--informs\r\n')
+                self.send_header('Content-type', "multipart/x-mixed-replace;boundary=%s" % MJPEG_BOUNDARY)
                 self.end_headers()
                 for count in range(100): # limit number of images to show before stopping
                     image = MyHandler.box.last_image()
                     if image == None:
                         print "no image?"
                         continue
+                    
+                    # shrink image
                     cv.ResetImageROI(image)
+                    shrink = cv.CreateImage((image.width / 8, image.height / 8), image.depth, image.nChannels)
+                    cv.Resize(image, shrink)
+                    
+                    # switch from BGR to RGB
+                    cv.CvtColor(shrink, shrink, cv.CV_BGR2RGB)
+                    
                     # use PIL to resize/make jpeg
-                    # have to switch from BGR to RGB
-                    im = Image.fromstring("RGB", cv.GetSize(image), image.tostring())
-                    (r, g, b) = im.split()
-                    im = Image.merge("RGB", (b, g, r))
-                    im.thumbnail((320, 240))
+                    im = Image.fromstring("RGB", cv.GetSize(shrink), shrink.tostring())
                     f = StringIO.StringIO()
                     im.save(f, "JPEG")
                     data = f.getvalue()
 
-                    self.wfile.write('--informs\r\n')
+                    self.wfile.write("--%s\r\n" % MJPEG_BOUNDARY)
                     self.send_header('Content-type', 'image/jpeg')
                     self.send_header('Content-length', f.len)
                     self.end_headers()
