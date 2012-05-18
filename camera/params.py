@@ -9,11 +9,11 @@ class Params:
     max_box_scan_attempts = 100
     camera_sleep_missing_codes = 0.1 # sleep between frames when there are undetected codes
     camera_sleep_no_box = 0.5 # sleep between frames when box is not detected
-    
+
     hue_bins = 30
     sat_bins = 32
 
-    white_threshold = (200, 200, 200) # in RGB space, this should select both the box and codes on tube
+    white_threshold = (150, 150, 150) # in RGB space, this should select both the box and codes on tube
 
     code_decoded_length = 10
     matrix_code_size = 12
@@ -33,10 +33,9 @@ class Params:
     annotate_present_color = (0, 255, 0) # green
     annotate_not_decoded = (0, 0, 255) # red
     annotate_outside = (255,255,0)
-    
-    box_max_area = 0.80 # box should not take up more than this fraction of total image
+
     box_fill_threshold = (20, 20, 20)
-    
+
     tab_color_low = (5, 75, 120) # HSV low threshold for tabs (orange)
     tab_color_high = (30, 255, 255) # HSV high threshold for tabs (orange)
     min_pixels_per_well = 100

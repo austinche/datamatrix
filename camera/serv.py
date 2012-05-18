@@ -95,6 +95,12 @@ class MyHandler(BaseHTTPRequestHandler):
             print e
             MyHandler.camera.stop_box()
 
+        finally:
+            try:
+                self.wfile.close()
+            except:
+                pass
+
 def main():
     MyHandler.box = BoxScanner()
     MyHandler.camera = camera.CameraThread()

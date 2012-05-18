@@ -1,6 +1,7 @@
 import cv
 import math
 import csv
+import numpy
 
 import datamatrix
 from params import Params
@@ -228,7 +229,7 @@ class BoxScanner:
         # annotate a particular well with some color rectangle
         # we add some margin around it so they don't overlap with nearby well
         cv.SetImageROI(self.image, self.inner_rect)
-        cv.Rectangle(self.image, (rect[0]+25, rect[1]+25), (rect[0]+rect[2]-25, rect[1]+rect[3]-25), color, 25)
+        cv.Rectangle(self.image, (rect[0]+15, rect[1]+15), (rect[0]+rect[2]-15, rect[1]+rect[3]-15), color, 25)
 
     def decode_codes(self):
         # use black white thresholded image
@@ -236,6 +237,8 @@ class BoxScanner:
         cv.SetImageROI(self.image, self.inner_rect)
 
         image = self.threshold(self.image)
+
+        #self.debug()
 
         # get rid of the box
         # we assume box is located on all 4 edges and we flood fill from all points
@@ -309,13 +312,17 @@ class BoxScanner:
                 if not success:
                     self.annotate_image(well_rect, Params.annotate_not_decoded)
 
+        # annotate the inner rect
+        cv.ResetImageROI(self.image)
+        cv.Rectangle(self.image, (self.inner_rect[0], self.inner_rect[1]), (self.inner_rect[0]+self.inner_rect[2], self.inner_rect[1]+self.inner_rect[3]), Params.annotate_outside, 10)
+
         return (count, empty)
 
     def find_box_and_rotate(self):
         # finds the box and rotate it to a standard orientation
 
         bwimg = self.threshold(self.image)
-        cv.Erode(bwimg, bwimg) # this helps to reduce noise a bit
+
         cv.Dilate(bwimg, bwimg, iterations=3) # this helps findcontours work better
 
         # find the bounding rectangle for the on pixels which should be the box outline
@@ -329,8 +336,8 @@ class BoxScanner:
         (height, width) = rect[1]
         #angle = rect[2]
 
-        # if area is too large, then there's likely no box and we selected the entire image
-        if height * width > Params.box_max_area * bwimg.width * bwimg.height:
+        # if we selected entire area, then there's likely no box
+        if height * width >= bwimg.width * bwimg.height:
             return False
 
         if height > width:
@@ -368,11 +375,13 @@ class BoxScanner:
         cv.SetImageROI(self.image, (0, 0, width, self.image.height))
         cv.CvtColor(self.image, left_image, cv.CV_BGR2HSV)
         cv.InRangeS(left_image, Params.tab_color_low, Params.tab_color_high, left_tabs)
+        cv.Erode(left_tabs, left_tabs)
 
         # right
         cv.SetImageROI(self.image, (right_border, 0, width, self.image.height))
         cv.CvtColor(self.image, right_image, cv.CV_BGR2HSV)
         cv.InRangeS(right_image, Params.tab_color_low, Params.tab_color_high, right_tabs)
+        cv.Erode(right_tabs, right_tabs)
 
         middle = self.image.height / 2
 
@@ -402,33 +411,38 @@ class BoxScanner:
         left_sum = cv.Sum(left_diff)[0]
         right_sum = cv.Sum(right_diff)[0]
 
-        (_, _, left_min_loc, left_max_loc) = cv.MinMaxLoc(left_diff)
-        (_, _, right_min_loc, right_max_loc) = cv.MinMaxLoc(right_diff)
+        # This can help reduce holes
+        cv.Dilate(left_diff, left_diff)
+        cv.Erode(left_diff, left_diff)
+        cv.Dilate(right_diff, right_diff)
+        cv.Erode(right_diff, right_diff)
+
+        # find edge of tab and use as edge of wells
+        # we consider the widest/brightest thing to be the tab
+
+        # cv.ResetImageROI(left_tabs)
+        # cv.ResetImageROI(right_tabs)
+        # cv.ShowImage("left tab", left_image)
+        # cv.ShowImage("right tab", right_image)
+        # cv.ShowImage("left tab processed", left_tabs)
+        # cv.ShowImage("right tab processed", right_tabs)
+        # cv.WaitKey()
 
         if left_sum < 0 and right_sum < 0:
             self.tabs_on_bottom = True
-            left_border = left_min_loc[0]
-            right_border_offset = right_min_loc[0]
-            sign = -1
+            (_, left_border) = self.longest_contiguous(numpy.asarray(left_diff)[0] < 0)
+            (right_border_offset, _) = self.longest_contiguous(numpy.asarray(right_diff)[0] < 0)
         elif left_sum > 0 and right_sum > 0:
             self.tabs_on_bottom = False
-            left_border = left_max_loc[0]
-            right_border_offset = right_max_loc[0]
-            sign = 1
+            (_, left_border) = self.longest_contiguous(numpy.asarray(left_diff)[0] > 0)
+            (right_border_offset, _) = self.longest_contiguous(numpy.asarray(right_diff)[0] > 0)
         else:
             return False # no tabs found, fail as we cannot determine box orientation
 
-        # find edge of tab and use as edge of wells
-        # we start from the brightest point and walk out
-        for i in xrange(left_border, width, 1):
-            if cmp(cv.Get1D(left_diff, i)[0], 0) != sign:
-                left_border = i
-                break
+        if left_border == None or right_border_offset == None:
+            return False
 
-        for i in xrange(right_border_offset, -1, -1):
-            if cmp(cv.Get1D(right_diff, i)[0], 0) != sign:
-                right_border = right_border + i
-                break
+        right_border = right_border + right_border_offset
 
         # figure out well size
         # this is a crude estimate
@@ -450,9 +464,28 @@ class BoxScanner:
         height = bottom_border - top_border + 1
         self.inner_rect = (left_border, top_border, width, height)
 
-        # annotate the inner rect
-        cv.Rectangle(self.image, (left_border, top_border), (right_border, bottom_border), Params.annotate_outside, 10)
         return True
+
+    def longest_contiguous(self, condition):
+        # returns the start and end indices of the longest contiguous block
+        # in condition (numpy array) that is true
+        d = numpy.diff(condition)
+        idx, = d.nonzero()
+
+        idx += 1
+        if condition[0]:
+            # If the start of condition is True prepend a 0
+            idx = numpy.r_[0, idx]
+
+        if condition[-1]:
+            # If the end of condition is True, append the length of the array
+            idx = numpy.r_[idx, condition.size - 1]
+        idx.shape = (-1,2)
+        block_size = idx[:,1] - idx[:,0]
+        if len(block_size) == 0:
+            return (None, None)
+        i = numpy.argmax(block_size)
+        return tuple(idx[i])
 
     def max_contour_area(self, contours):
         max_contour = None
@@ -500,4 +533,10 @@ class BoxScanner:
         rotated = cv.CreateImage((width, height), image.depth, image.nChannels)
         cv.WarpAffine(image, rotated, trans)
         return rotated
+
+    def debug(self, image=None):
+        if image == None:
+            image = self.image
+        cv.ShowImage("debug", image)
+        cv.WaitKey()
 
