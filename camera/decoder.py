@@ -7,6 +7,8 @@ import datamatrix
 from params import Params
 
 class BoxScanner:
+    FONT = cv.InitFont(cv.CV_FONT_HERSHEY_PLAIN, 1.0, 1.0)
+
     def __init__(self):
         self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
         self.image = None
@@ -28,11 +30,35 @@ class BoxScanner:
                 else:
                     writer.writerow([well, self.codes[r][c], "OK"])
 
-    def last_image(self):
-        return self.info_image
+    def annotated_image(self, width, height):
+        # returns an annotated image of the current box
+        # resizes to the given size
+        # uses part of the image to add a caption
 
-    def current_decode_stats(self):
-        return self.decode_info
+        image = self.info_image
+        if image == None:
+            return None
+
+        # shrink image
+        cv.ResetImageROI(image)
+
+        caption_height = 40
+
+        # image can be different sizes depending on if it's been cropped yet
+        # we shrink to fixed size and add a caption
+        shrink = cv.CreateImage((width, height), image.depth, image.nChannels)
+        cv.SetImageROI(shrink, (0, 0, width, height  - caption_height))
+        cv.Resize(image, shrink)
+
+        # add caption text
+        cv.SetImageROI(shrink, (0, height - caption_height, width, caption_height))
+        cv.Set(shrink, (255, 255, 255))
+        (count, empty) = self.decode_info
+        cv.PutText(shrink, "Unknown: %d " % (96 - count), (0, 20), BoxScanner.FONT, Params.annotate_not_decoded)
+        cv.PutText(shrink, "Empty: %d " % empty, (120, 20), BoxScanner.FONT, Params.annotate_empty_color)
+        cv.PutText(shrink, "Codes: %d " % (count - empty), (220, 20), BoxScanner.FONT, Params.annotate_present_color)
+        cv.ResetImageROI(shrink)
+        return shrink
 
     def scan(self, image):
         # returns count of wells decoded
@@ -57,6 +83,18 @@ class BoxScanner:
         print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
 
         return count
+
+    def datamatrix_decode(self, bits):
+        try:
+            code = datamatrix.decode(bits)
+        except Exception, e:
+            #print e
+            return None
+
+        if len(code) != Params.code_decoded_length:
+            print "datamatrix code returned is of the wrong length", code
+            return None
+        return code
 
     def decode_code_2(self, image):
         # This method seems to decode some tubes that the other method doesn't
@@ -153,17 +191,7 @@ class BoxScanner:
                 rowbits.append(np.count_nonzero(cell) > 4)
             bits.append(rowbits)
 
-        try:
-            code = datamatrix.decode(bits)
-        except Exception, e:
-            print e
-            return None
-
-        if len(code) != Params.code_decoded_length:
-            print "datamatrix code returned is of the wrong length", code
-            return None
-
-        return code
+        return self.datamatrix_decode(bits)
 
 
     def find_solid_edge(self, data):
@@ -357,17 +385,7 @@ class BoxScanner:
                 rowbits.append(intensity > threshold)
             bits.append(rowbits)
 
-        try:
-            code = datamatrix.decode(bits)
-        except Exception, e:
-            print e
-            return None
-
-        if len(code) != Params.code_decoded_length:
-            print "datamatrix code returned is of the wrong length", code
-            return None
-
-        return code
+        return self.datamatrix_decode(bits)
 
     def find_horizontal_edge(self, image, (x_start, x_end), (y_start, y_end), threshold):
         # goes from [y_start..y_end] and counts the num of pixels on between [x_start..x_end] for each row
@@ -450,16 +468,14 @@ class BoxScanner:
                 offset_y = r * self.well_size
                 well_rect = (offset_x, offset_y, self.well_size, self.well_size)
 
-                # check if already have the code
-                if self.codes[box_r][box_c] != None:
-                    if not self.codes[box_r][box_c]:
-                        self.annotate_image(well_rect, Params.annotate_empty_color)
-                        empty += 1
-                    else:
-                        self.annotate_image(well_rect, Params.annotate_present_color)
+                # check if already have the code and don't try decoding again
+                # we assume if we decoded a code, it's impossible that it's incorrect
+                # however, if called something empty before, we could be wrong
+                # so we still repeat the empty well test
+                if self.codes[box_r][box_c]:
+                    self.annotate_image(well_rect, Params.annotate_present_color)
                     count += 1
                     continue
-
 
                 well = cv.GetSubRect(search_img, well_rect)
                 if cv.CountNonZero(well) < Params.min_code_size_pixels:

@@ -18,14 +18,85 @@ PORT=3333
 
 import cv
 import time
+import threading
 import Image
 import StringIO
 
 import camera
 from decoder import BoxScanner
+from params import Params
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     pass
+
+class ScanThread(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self)
+        self.event = threading.Event()
+        self.camera = camera.Camera()
+        self.camera.start()
+        self.box = BoxScanner()
+        self.attempt_count = 0
+        self.running = True
+        self.scanning = False
+
+    def run(self):
+        while self.running:
+            try:
+                if self.scanning and self.attempt_count < Params.max_box_scan_attempts:
+                    self.attempt_count += 1
+                    frame = self.camera.frame()
+                    if not frame:
+                        print "no camera frame available"
+                        time.sleep(0.5)
+                        continue
+                    count = self.box.scan(frame)
+                    if count == 96:
+                        self.stop_scan()
+                    elif count == 0:
+                        time.sleep(0.5)
+                    else:
+                        time.sleep(0.01) # yield to other threads
+                else:
+                    self.stop_scan()
+                    self.event.wait()
+                    self.event.clear()
+            except Exception, e:
+                print e
+
+    def exit_thread(self):
+        self.running = False
+        self.camera.exit_thread()
+        self.event.set()
+
+    def stop_scan(self):
+        self.scanning = False
+        self.camera.stop_capture()
+
+    def ensure_running(self):
+        self.scanning = True
+        self.camera.start_capture()
+        self.event.set()
+
+    def reset_box(self):
+        self.box = BoxScanner()
+        self.attempt_count = 0
+        self.event.set()
+
+    def image(self, width, height):
+        image = self.box.annotated_image(width, height)
+        if image == None:
+            return (0, None)
+
+        # switch from BGR to RGB
+        cv.CvtColor(image, image, cv.CV_BGR2RGB)
+
+        # use PIL to make jpeg
+        im = Image.fromstring("RGB", cv.GetSize(image), image.tostring())
+        f = StringIO.StringIO()
+        im.save(f, "JPEG")
+        data = f.getvalue()
+        return (f.len, data)
 
 class MyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -34,54 +105,24 @@ class MyHandler(BaseHTTPRequestHandler):
             if self.path.startswith("/cam"):
                 # stream via motion JPEG
                 # http://en.wikipedia.org/wiki/Motion_JPEG
-                MyHandler.box = BoxScanner()
-                MyHandler.camera.start_box(MyHandler.box)
+                MyHandler.scanner.reset_box()
+                MyHandler.scanner.ensure_running()
                 self.send_response(200)
                 self.send_header('Content-type', "multipart/x-mixed-replace;boundary=%s" % MJPEG_BOUNDARY)
                 self.end_headers()
                 for count in range(100): # limit number of images to show before stopping
-                    image = MyHandler.box.last_image()
-                    if image == None:
-                        print "no image?"
-                        time.sleep(0.5)
-                        continue
-
-                    # shrink image
-                    cv.ResetImageROI(image)
-
-                    # image can be different sizes depending on if it's been cropped yet
-                    # we shrink to fixed size and add a caption
-                    shrink = cv.CreateImage((320, 280), image.depth, image.nChannels)
-                    cv.SetImageROI(shrink, (0, 0, 320, 240))
-                    cv.Resize(image, shrink)
-
-                    # add caption text
-                    cv.SetImageROI(shrink, (0, 240, 320, 40))
-                    cv.Set(shrink, (255, 255, 255))
-                    (count, empty) = MyHandler.box.decode_info
-                    cv.PutText(shrink, "Empty: %d " % empty, (0, 20), MyHandler.font, (255, 0, 0))
-                    cv.PutText(shrink, "Codes: %d " % (count - empty), (100, 20), MyHandler.font, (0, 255, 0))
-                    cv.PutText(shrink, "Unknown: %d " % (96 - count), (200, 20), MyHandler.font, (0, 0, 255))
-
-                    # switch from BGR to RGB
-                    cv.ResetImageROI(shrink)
-                    cv.CvtColor(shrink, shrink, cv.CV_BGR2RGB)
-
-                    # use PIL to make jpeg
-                    im = Image.fromstring("RGB", cv.GetSize(shrink), shrink.tostring())
-                    f = StringIO.StringIO()
-                    im.save(f, "JPEG")
-                    data = f.getvalue()
-
-                    self.wfile.write("--%s\r\n" % MJPEG_BOUNDARY)
-                    self.send_header('Content-type', 'image/jpeg')
-                    self.send_header('Content-length', f.len)
-                    self.end_headers()
-                    self.wfile.write(data)
+                    (length, data) = MyHandler.scanner.image(320, 280)
+                    # image may be unavailable
+                    if length > 0:
+                        self.wfile.write("--%s\r\n" % MJPEG_BOUNDARY)
+                        self.send_header('Content-type', 'image/jpeg')
+                        self.send_header('Content-length', length)
+                        self.end_headers()
+                        self.wfile.write(data)
                     time.sleep(0.5)
-                MyHandler.camera.stop_box()
-
+                MyHandler.scanner.stop_scan()
             elif self.path.strip('/') == '':
+                MyHandler.scanner.ensure_running()
                 self.send_response(200)
                 self.send_header('Content-type','text/plain')
                 self.end_headers()
@@ -93,19 +134,12 @@ class MyHandler(BaseHTTPRequestHandler):
         except Exception, e:
             print "Exception in server thread"
             print e
-            MyHandler.camera.stop_box()
-
-        finally:
-            try:
-                self.wfile.close()
-            except:
-                pass
+            MyHandler.scanner.stop_scan()
 
 def main():
     MyHandler.box = BoxScanner()
-    MyHandler.camera = camera.CameraThread()
-    MyHandler.camera.start()
-    MyHandler.font = cv.InitFont(cv.CV_FONT_HERSHEY_PLAIN, 1.0, 1.0)
+    MyHandler.scanner = ScanThread()
+    MyHandler.scanner.start()
 
     server = ThreadingHTTPServer(('', PORT), MyHandler)
     print 'started httpserver...'
@@ -118,7 +152,7 @@ def main():
         print '^C received'
     finally:
         print 'Shutting down server'
-        MyHandler.camera.exit()
+        MyHandler.scanner.exit_thread()
         server.socket.close()
 
 if __name__ == '__main__':

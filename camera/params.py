@@ -7,8 +7,6 @@ class Params:
     params_file = os.path.join(os.path.dirname(__file__), "params.cfg")
 
     max_box_scan_attempts = 100
-    camera_sleep_missing_codes = 0.1 # sleep between frames when there are undetected codes
-    camera_sleep_no_box = 0.5 # sleep between frames when box is not detected
 
     hue_bins = 30
     sat_bins = 32
