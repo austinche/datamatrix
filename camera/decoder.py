@@ -1,7 +1,7 @@
 import cv
 import math
 import csv
-import numpy
+import numpy as np
 
 import datamatrix
 from params import Params
@@ -58,8 +58,187 @@ class BoxScanner:
 
         return count
 
+    def decode_code_2(self, image):
+        # This method seems to decode some tubes that the other method doesn't
+        # but in general seems to do worse than the other one
+
+        # image should be black/white and contain a single code
+        # The code should be rotated so the edges are horizontal/vertical
+        # Image should be mostly cropped but there may still be some extra margins
+
+        # we use numpy to do the processing
+        # convert to boolean matrix
+        # use GetSubRect to convert to Mat
+        cv.ResetImageROI(image)
+        data = np.asarray(cv.GetSubRect(image, (0, 0, image.width, image.height))) > 0
+
+        # find longest contiguous vertical and horizontal block
+        # that forms the largest square
+
+        solid_rows = self.find_solid_edge(data)
+        solid_cols = self.find_solid_edge(data.transpose())
+
+        # find the best combination of row/col to make the largest code
+        best = None
+        for r in solid_rows:
+            for c in solid_cols:
+                # the row/col must intersect with each other
+                if c[0] < r[1][0] or c[0] > r[1][1]:
+                    continue
+                if r[0] < c[1][0] or r[0] > c[1][1]:
+                    continue
+                w = max(c[0] - r[1][0], r[1][1] - c[0])
+                h = max(r[0] - c[1][0], c[1][1] - r[0])
+                if w < Params.edge_min_pixels_solid or h < Params.edge_min_pixels_solid:
+                    continue
+                size = w * h
+                if best == None or size > best[0]:
+                    best = (size, r, c)
+
+        if best == None:
+            return None
+
+        # crop and rotate the L corner to the bottom left
+        row = best[1]
+        col = best[2]
+        if col[0] - row[1][0] > row[1][1] - col[0]:
+            # l_corner on right
+            col_low = row[1][0]
+            col_high = col[0]
+            on_left = False
+        else:
+            # l_corner on left
+            col_low = col[0]
+            col_high = row[1][1]
+            on_left = True
+        if row[0] - col[1][0] > col[1][1] - row[0]:
+            # l_corner on bottom
+            row_low = col[1][0]
+            row_high = row[0]
+            if on_left:
+                rotation = 0
+            else:
+                rotation = 3
+        else:
+            # l_corner on top
+            row_low = row[0]
+            row_high = col[1][1]
+            if on_left:
+                rotation = 1
+            else:
+                rotation = 2
+
+        data = data[row_low:row_high+1,col_low:col_high+1]
+        if rotation > 0:
+            data = np.rot90(data, rotation)
+
+        # find the dotted edges
+        dotted_row = self.find_dotted_edge(data)
+        dotted_col = self.find_dotted_edge(np.rot90(data))
+        if dotted_row == None or dotted_col == None:
+            return None
+
+        # calculate value for every cell
+        # we take the average of a 3x3 square around each pixel
+        bits = []
+        for r in range(len(dotted_row)):
+            rowbits = []
+            for c in range(len(dotted_col)):
+                # note: the dotted_row array gives column coordinates
+                # and vice-versa for the dotted_col array
+                y = dotted_col[r]
+                x = dotted_row[c]
+                cell = data[y-1:y+2,x-1:x+2]
+
+                rowbits.append(np.count_nonzero(cell) > 4)
+            bits.append(rowbits)
+
+        try:
+            code = datamatrix.decode(bits)
+        except Exception, e:
+            print e
+            return None
+
+        if len(code) != Params.code_decoded_length:
+            print "datamatrix code returned is of the wrong length", code
+            return None
+
+        return code
+
+
+    def find_solid_edge(self, data):
+        # finds the longest solid edge along the rows
+        (height, width) = data.shape
+        longest = []
+        for i in range(height):
+            row = data[i,:]
+            (start, end) = self.longest_contiguous(row)
+            if start == None or end == None:
+                continue
+            length = end - start
+            if length > Params.edge_min_pixels_solid:
+                longest.append((i, [start, end-1], length))
+        return longest
+
+    def calc_dottedness(self, idx):
+        # add the False ranges
+        means = []
+        ranges = []
+        # the row/col start with different True/False so we have to handle both
+        # for simplicity, we add additional True blocks to beginning or end
+        if idx[0][0] == 0:
+            last = idx[-1][1]
+            idx = np.r_[idx, np.array([[last, last+1]])]
+        else:
+            idx = np.r_[np.array([[-1, 0]]), idx]
+        for i in range(Params.matrix_code_size/2):
+            false_begin = idx[i][1]
+            false_end = idx[i+1][0] - 1
+            true_begin = idx[i+1][0]
+            true_end = idx[i+1][1] - 1
+            means.append((false_begin + false_end) / 2)
+            means.append((true_begin + true_end) / 2)
+            ranges.append(false_end - false_begin + 1)
+            ranges.append(true_end - true_begin + 1)
+
+        # we remove the pseudo square we added at the beginning
+        if idx[0][0] == 0:
+            means = means[:-2]
+            ranges = ranges[:-2]
+        else:
+            means = means[1:-1]
+            ranges = ranges[1:-1]
+
+        return (means, np.std(np.array(ranges)))
+
+    def find_dotted_edge(self, data):
+        # searches for dotted edge along the top rows of data
+
+        (height, width) = data.shape
+        dotted_row = None
+        for r in xrange(height):
+            # row should alternate between True/False
+            row = data[r,:]
+            idx = self.find_runs(row)
+            if len(idx) < Params.matrix_code_size / 2:
+                # not a dotted row
+                # if we already have a dotted row, then break
+                # otherwise keep searching for first dotted row
+                if dotted_row != None:
+                    break
+            else:
+                (mean, std) = self.calc_dottedness(idx)
+                # we only save the one with the lowest std
+                if dotted_row == None or std < dotted_row[1]:
+                    dotted_row = (mean, std)
+
+        if dotted_row == None:
+            return None
+
+        return dotted_row[0]
+
     def decode_code(self, image):
-        # image should contain a single code
+        # image should be black/white and contain a single code
         # The code should be rotated so the edges are horizontal/vertical
         # Image should be mostly cropped but there may still be some extra margins
 
@@ -118,6 +297,7 @@ class BoxScanner:
 
                 bottom = self.find_horizontal_edge(image, (right-size+1, right), (top, image.height-1), Params.code_min_pixels_slice)
                 left = self.find_vertical_edge(image, (right, 0), (top, bottom), Params.code_min_pixels_slice)
+                #bottom = self.find_horizontal_edge(image, (left, right), (top, bottom), Params.code_min_pixels_slice)
 
             else:
                 # L-corner in bottom right
@@ -179,7 +359,8 @@ class BoxScanner:
 
         try:
             code = datamatrix.decode(bits)
-        except:
+        except Exception, e:
+            print e
             return None
 
         if len(code) != Params.code_decoded_length:
@@ -300,13 +481,21 @@ class BoxScanner:
                     if area > Params.min_code_size_pixels:
                         # due to previous dilation operation, we expect the rectangle to be larger than the code
                         well_img = self.crop_and_rotate(image, rect)
+                        # image can be a not perfect black/white due to interpolation above
+                        # This puts it back to black/white and gives better results
+                        cv.Threshold(well_img, well_img, 128, 255, cv.CV_THRESH_BINARY)
+
                         code = self.decode_code(well_img)
+                        if code == None:
+                            code = self.decode_code_2(well_img)
                         if code != None:
                             self.codes[box_r][box_c] = code
                             count += 1
                             self.annotate_image(well_rect, Params.annotate_present_color)
                             success = True
                             break
+                        #cv.ResetImageROI(well_img)
+                        #self.debug(well_img)
 
                     contours = contours.h_next()
                 if not success:
@@ -327,6 +516,7 @@ class BoxScanner:
 
         # find the bounding rectangle for the on pixels which should be the box outline
         contours = cv.FindContours(bwimg, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
+
         if len(contours) == 0:
             return False
         (max_contour, max_contour_area) = self.max_contour_area(contours)
@@ -348,13 +538,14 @@ class BoxScanner:
 
         self.image = self.crop_and_rotate(self.image, rect)
 
+        #self.debug_resize()
         return True
 
     def find_orientation(self):
         # find the box tabs to determine orientation
 
         # this is maximum size of a single well as it doesn't include the border
-        width = self.image.width / Params.num_cols
+        width = self.image.width / Params.num_cols + 50
 
         right_border = self.image.width - width - 1
 
@@ -430,12 +621,12 @@ class BoxScanner:
 
         if left_sum < 0 and right_sum < 0:
             self.tabs_on_bottom = True
-            (_, left_border) = self.longest_contiguous(numpy.asarray(left_diff)[0] < 0)
-            (right_border_offset, _) = self.longest_contiguous(numpy.asarray(right_diff)[0] < 0)
+            (_, left_border) = self.longest_contiguous(np.asarray(left_diff)[0] < 0)
+            (right_border_offset, _) = self.longest_contiguous(np.asarray(right_diff)[0] < 0)
         elif left_sum > 0 and right_sum > 0:
             self.tabs_on_bottom = False
-            (_, left_border) = self.longest_contiguous(numpy.asarray(left_diff)[0] > 0)
-            (right_border_offset, _) = self.longest_contiguous(numpy.asarray(right_diff)[0] > 0)
+            (_, left_border) = self.longest_contiguous(np.asarray(left_diff)[0] > 0)
+            (right_border_offset, _) = self.longest_contiguous(np.asarray(right_diff)[0] > 0)
         else:
             return False # no tabs found, fail as we cannot determine box orientation
 
@@ -466,25 +657,31 @@ class BoxScanner:
 
         return True
 
-    def longest_contiguous(self, condition):
-        # returns the start and end indices of the longest contiguous block
-        # in condition (numpy array) that is true
-        d = numpy.diff(condition)
+    def find_runs(self, condition):
+        # returns the start index and end index+1 of all runs
+        # in condition (numpy array) that are true
+        d = np.diff(condition)
         idx, = d.nonzero()
 
         idx += 1
         if condition[0]:
             # If the start of condition is True prepend a 0
-            idx = numpy.r_[0, idx]
+            idx = np.r_[0, idx]
 
         if condition[-1]:
             # If the end of condition is True, append the length of the array
-            idx = numpy.r_[idx, condition.size - 1]
+            idx = np.r_[idx, condition.size]
         idx.shape = (-1,2)
+        return idx
+
+    def longest_contiguous(self, condition):
+        # returns the start and end indices of the longest contiguous block
+        # in condition (numpy array) that is true
+        idx = self.find_runs(condition)
         block_size = idx[:,1] - idx[:,0]
         if len(block_size) == 0:
             return (None, None)
-        i = numpy.argmax(block_size)
+        i = np.argmax(block_size)
         return tuple(idx[i])
 
     def max_contour_area(self, contours):
@@ -534,9 +731,17 @@ class BoxScanner:
         cv.WarpAffine(image, rotated, trans)
         return rotated
 
+    def debug_resize(self, image=None):
+        if image == None:
+            image = self.image
+        resized = cv.CreateImage((image.width / 4, image.height / 4), image.depth, image.nChannels)
+        cv.Resize(image, resized)
+        self.debug(resized)
+
     def debug(self, image=None):
         if image == None:
             image = self.image
         cv.ShowImage("debug", image)
+        cv.SaveImage("/tmp/debug.tif", image)
         cv.WaitKey()
 
