@@ -97,6 +97,9 @@ class ScanThread(threading.Thread):
         data = f.getvalue()
         return (f.len, data)
 
+    def write_code_csv(self, wfile):
+        self.box.write_code_csv(wfile)
+
 class MyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         MJPEG_BOUNDARY="a34e78adc034c428d4a35c1831db7bf8" # random string
@@ -127,7 +130,7 @@ class MyHandler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header('Content-type','text/plain')
                 self.end_headers()
-                codes = MyHandler.box.write_code_csv(self.wfile)
+                codes = MyHandler.scanner.write_code_csv(self.wfile)
 
             else:
                 self.send_error(404, 'File not found')
@@ -138,7 +141,6 @@ class MyHandler(BaseHTTPRequestHandler):
             MyHandler.scanner.stop_scan()
 
 def main():
-    MyHandler.box = BoxScanner()
     MyHandler.scanner = ScanThread()
     MyHandler.scanner.start()
 
