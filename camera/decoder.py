@@ -639,10 +639,14 @@ class BoxScanner:
             self.tabs_on_bottom = True
             (_, left_border) = self.longest_contiguous(np.asarray(left_diff)[0] < 0)
             (right_border_offset, _) = self.longest_contiguous(np.asarray(right_diff)[0] < 0)
+            top = middle
+            bottom = self.image.height - 1
         elif left_sum > 0 and right_sum > 0:
             self.tabs_on_bottom = False
             (_, left_border) = self.longest_contiguous(np.asarray(left_diff)[0] > 0)
             (right_border_offset, _) = self.longest_contiguous(np.asarray(right_diff)[0] > 0)
+            top = 0
+            bottom = middle
         else:
             return False # no tabs found, fail as we cannot determine box orientation
 
@@ -670,6 +674,11 @@ class BoxScanner:
         width = right_border - left_border + 1
         height = bottom_border - top_border + 1
         self.inner_rect = (left_border, top_border, width, height)
+
+        # annotate the box tabs
+        cv.ResetImageROI(self.image)
+        cv.Rectangle(self.image, (0, top), (left_border, bottom), Params.annotate_tabs, 30)
+        cv.Rectangle(self.image, (right_border, top), (self.image.width-1, bottom), Params.annotate_tabs, 30)
 
         return True
 

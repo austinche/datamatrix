@@ -31,10 +31,11 @@ class Params:
     annotate_present_color = (0, 255, 0) # green
     annotate_not_decoded = (0, 0, 255) # red
     annotate_outside = (255,255,0)
+    annotate_tabs = (0,255,255)
 
     box_fill_threshold = (20, 20, 20)
 
-    tab_color_low = (5, 75, 120) # HSV low threshold for tabs (orange)
+    tab_color_low = (15, 150, 190) # HSV low threshold for tabs (orange)
     tab_color_high = (30, 255, 255) # HSV high threshold for tabs (orange)
     min_pixels_per_well = 100
 
