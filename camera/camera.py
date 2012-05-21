@@ -13,6 +13,7 @@ class Camera(threading.Thread):
         self.capturing = False
         self.last_frame = None
         self.captured_frames = 0
+        self.notify = None
 
     def __del__(self):
         del(self.capture)
@@ -55,6 +56,8 @@ class Camera(threading.Thread):
                         self.capturing = False
                     else:
                         self.captured_frames += 1
+                    if self.notify:
+                        self.notify.set()
                     time.sleep(0.2) # yield to other threads
                 else:
                     self.event.wait()
@@ -66,13 +69,14 @@ class Camera(threading.Thread):
         self.running = False
         self.event.set()
 
-    def start_capture(self):
+    def start_capture(self, notify):
+        self.notify = notify
         self.capturing = True
         self.captured_frames = 0
         self.event.set()
 
     def stop_capture(self):
+        self.notify = None
         self.capturing = False
         self.last_frame = None # throw away any existing frame
         self.event.set()
-

@@ -39,6 +39,7 @@ class ScanThread(threading.Thread):
         self.attempt_count = 0
         self.running = True
         self.scanning = False
+        self.notify = None
 
     def run(self):
         while self.running:
@@ -46,21 +47,17 @@ class ScanThread(threading.Thread):
                 if self.scanning and self.attempt_count < Params.max_box_scan_attempts:
                     self.attempt_count += 1
                     frame = self.camera.frame()
-                    if not frame:
-                        print "no camera frame available"
-                        time.sleep(0.5)
-                        continue
-                    count = self.box.scan(frame)
-                    if count == 96:
-                        self.stop_scan()
-                    elif count == 0:
-                        time.sleep(0.5)
-                    else:
-                        time.sleep(0.01) # yield to other threads
+                    if frame:
+                        count = self.box.scan(frame)
+                        if count == 96:
+                            self.stop_scan()
+                        if self.notify:
+                            self.notify.set()
+                    self.event.wait(1)
                 else:
                     self.stop_scan()
                     self.event.wait()
-                    self.event.clear()
+                self.event.clear()
             except Exception, e:
                 print e
 
@@ -70,17 +67,19 @@ class ScanThread(threading.Thread):
         self.event.set()
 
     def stop_scan(self):
+        self.notify = None
         self.scanning = False
         self.camera.stop_capture()
 
     def ensure_running(self):
         self.scanning = True
-        self.camera.start_capture()
+        self.camera.start_capture(self.event)
         self.event.set()
 
-    def reset_box(self):
+    def reset_box(self, notify):
         self.box = BoxScanner()
         self.attempt_count = 0
+        self.notify = notify
         self.event.set()
 
     def image(self, width, height):
@@ -105,7 +104,8 @@ class MyHandler(BaseHTTPRequestHandler):
             if self.path.startswith("/cam"):
                 # stream via motion JPEG
                 # http://en.wikipedia.org/wiki/Motion_JPEG
-                MyHandler.scanner.reset_box()
+                notify = threading.Event()
+                MyHandler.scanner.reset_box(notify)
                 MyHandler.scanner.ensure_running()
                 self.send_response(200)
                 self.send_header('Content-type', "multipart/x-mixed-replace;boundary=%s" % MJPEG_BOUNDARY)
@@ -119,7 +119,8 @@ class MyHandler(BaseHTTPRequestHandler):
                         self.send_header('Content-length', length)
                         self.end_headers()
                         self.wfile.write(data)
-                    time.sleep(0.5)
+                    notify.wait(1)
+                    notify.clear()
                 MyHandler.scanner.stop_scan()
             elif self.path.strip('/') == '':
                 MyHandler.scanner.ensure_running()
