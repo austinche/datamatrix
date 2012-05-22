@@ -97,6 +97,9 @@ class ScanThread(threading.Thread):
         data = f.getvalue()
         return (f.len, data)
 
+    def write_box_info(self, wfile):
+        self.box.write_box_info(wfile)
+
     def write_code_csv(self, wfile):
         self.box.write_code_csv(wfile)
 
@@ -122,6 +125,19 @@ class MyHandler(BaseHTTPRequestHandler):
                         self.send_header('Content-length', length)
                         self.end_headers()
                         self.wfile.write(data)
+                    notify.wait(1)
+                    notify.clear()
+                MyHandler.scanner.stop_scan()
+            elif self.path.startswith("/text"):
+                # stream text info
+                notify = threading.Event()
+                MyHandler.scanner.reset_box(notify)
+                MyHandler.scanner.ensure_running()
+                self.send_response(200)
+                self.send_header('Content-type', "text/plain")
+                self.end_headers()
+                for count in range(100): # limit number of images to show before stopping
+                    MyHandler.scanner.write_box_info(self.wfile)
                     notify.wait(1)
                     notify.clear()
                 MyHandler.scanner.stop_scan()

@@ -15,6 +15,12 @@ class BoxScanner:
         self.info_image = None
         self.decode_info = (0, 0)
 
+    def write_box_info(self, output):
+        output.write(self.codes)
+        output.write("\n")
+        (count, empty) = self.decode_info
+        output.write("Wells done: %d empty: %d codes: %d unknown: %d\n" % (count, empty, count - empty, 96 - count))
+
     def write_code_csv(self, output):
         # write code in csv form with well (e.g. A1-H12) followed by barcode and then status
         # status column is OK for code present and decoded, EMPTY for no tube, or UNKNOWN for undecoded
@@ -438,6 +444,7 @@ class BoxScanner:
         image = self.threshold(self.image)
 
         #self.debug()
+        #self.debug_resize(image)
 
         # get rid of the box
         # we assume box is located on all 4 edges and we flood fill from all points
@@ -675,10 +682,10 @@ class BoxScanner:
         height = bottom_border - top_border + 1
         self.inner_rect = (left_border, top_border, width, height)
 
-        # annotate the box tabs
+        # annotate the box tabs. don't want this to enter the inner rect as it could affect later processing
         cv.ResetImageROI(self.image)
-        cv.Rectangle(self.image, (0, top), (left_border, bottom), Params.annotate_tabs, 30)
-        cv.Rectangle(self.image, (right_border, top), (self.image.width-1, bottom), Params.annotate_tabs, 30)
+        cv.Rectangle(self.image, (0, top), (left_border-15, bottom), Params.annotate_tabs, 15)
+        cv.Rectangle(self.image, (right_border+15, top), (self.image.width-1, bottom), Params.annotate_tabs, 15)
 
         return True
 

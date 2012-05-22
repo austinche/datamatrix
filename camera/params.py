@@ -4,12 +4,7 @@ import pickle
 
 # global params/config
 class Params:
-    params_file = os.path.join(os.path.dirname(__file__), "params.cfg")
-
     max_box_scan_attempts = 100
-
-    hue_bins = 30
-    sat_bins = 32
 
     white_threshold = (150, 150, 150) # in RGB space, this should select both the box and codes on tube
 
