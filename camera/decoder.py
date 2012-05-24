@@ -533,12 +533,35 @@ class BoxScanner:
     def find_box_and_rotate(self):
         # finds the box and rotate it to a standard orientation
 
-        bwimg = self.threshold(self.image)
+        # We assume some part of the box exists at the center of the image
+        # For speed, we crop the image and only search that region for some portion of the box
+        # this size should be > than maximum possible size of one square in the box
+        size = int(max(self.image.width, self.image.height) / Params.num_cols)
+        x = int((self.image.width - size) / 2)
+        y = int((self.image.height - size) / 2)
+        rect = (x, y, size, size)
 
-        cv.Dilate(bwimg, bwimg, iterations=3) # this helps findcontours work better
+        gray = cv.CreateImage(cv.GetSize(self.image), 8, 1)
+        cv.CvtColor(self.image, gray, cv.CV_BGR2GRAY)
+
+        # To find the box we calculate the histogram and assume that the number of box pixels
+        # is greater than this threshold
+        threshold = size * size / Params.box_pixel_threshold_factor
+        num_bins = 16
+        hist = cv.CreateHist([num_bins], cv.CV_HIST_ARRAY, [[0, 255]])
+        cv.SetImageROI(gray, rect)
+        cv.CalcHist([gray], hist)
+        total = 0
+        for i in range(num_bins-1,-1,-1):
+            v = cv.QueryHistValue_1D(hist, i)
+            total += v
+            if total > threshold:
+                break
+        cv.ResetImageROI(gray)
+        cv.Threshold(gray, gray, i * 256 / num_bins, 255, cv.CV_THRESH_BINARY)
 
         # find the bounding rectangle for the on pixels which should be the box outline
-        contours = cv.FindContours(bwimg, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
+        contours = cv.FindContours(gray, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
 
         if len(contours) == 0:
             return False
@@ -550,7 +573,7 @@ class BoxScanner:
         #angle = rect[2]
 
         # if we selected entire area, then there's likely no box
-        if height * width >= bwimg.width * bwimg.height:
+        if height * width >= self.image.width * self.image.height:
             return False
 
         if height > width:
