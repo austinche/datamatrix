@@ -2,8 +2,6 @@ import cv
 import time
 import threading
 
-from decoder import BoxScanner
-
 class Camera(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
@@ -63,6 +61,7 @@ class Camera(threading.Thread):
                     self.event.clear()
             except Exception, e:
                 print e
+                time.sleep(10)
 
     def exit_thread(self):
         self.running = False

@@ -23,6 +23,7 @@ import Image
 import StringIO
 
 import camera
+import scanner
 from decoder import BoxScanner
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
@@ -34,6 +35,8 @@ class ScanThread(threading.Thread):
         self.event = threading.Event()
         self.camera = camera.Camera()
         self.camera.start()
+        self.scanner = scanner.Scanner()
+        self.scanner.start()
         self.box = BoxScanner()
         self.attempt_count = 0
         self.running = True
@@ -44,15 +47,24 @@ class ScanThread(threading.Thread):
         while self.running:
             try:
                 if self.scanning and self.attempt_count < 100:
-                    self.attempt_count += 1
-                    frame = self.camera.frame()
-                    if frame:
-                        count = self.box.scan(frame)
+                    sleep_time = 10
+                    image = self.camera.frame()
+                    if image:
+                        sleep_time = 1
+                        self.attempt_count += 1
+                    else:
+                        image = self.scanner.image()
+                        self.attempt_count += 10
+                        if image:
+                            sleep_time = 5
+                    if image:
+                        print "got image"
+                        count = self.box.scan(image)
                         if count == 96:
                             self.stop_scan()
                         if self.notify:
                             self.notify.set()
-                    self.event.wait(1)
+                    self.event.wait(sleep_time)
                 else:
                     self.stop_scan()
                     self.event.wait()
@@ -63,16 +75,19 @@ class ScanThread(threading.Thread):
     def exit_thread(self):
         self.running = False
         self.camera.exit_thread()
+        self.scanner.exit_thread()
         self.event.set()
 
     def stop_scan(self):
         self.notify = None
         self.scanning = False
         self.camera.stop_capture()
+        self.scanner.stop_scan()
 
     def ensure_running(self):
         self.scanning = True
         self.camera.start_capture(self.event)
+        self.scanner.start_scan(self.event)
         self.event.set()
 
     def reset_box(self, notify):
