@@ -24,7 +24,6 @@ import StringIO
 
 import camera
 from decoder import BoxScanner
-from params import Params
 
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     pass
@@ -44,7 +43,7 @@ class ScanThread(threading.Thread):
     def run(self):
         while self.running:
             try:
-                if self.scanning and self.attempt_count < Params.max_box_scan_attempts:
+                if self.scanning and self.attempt_count < 100:
                     self.attempt_count += 1
                     frame = self.camera.frame()
                     if frame:

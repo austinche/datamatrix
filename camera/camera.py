@@ -3,7 +3,6 @@ import time
 import threading
 
 from decoder import BoxScanner
-from params import Params
 
 class Camera(threading.Thread):
     def __init__(self):
