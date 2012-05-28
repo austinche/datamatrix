@@ -476,16 +476,13 @@ class BoxScanner:
         avg_cols = cv.CreateMat(1, gray.width, cv.CV_8UC1)
         cv.Reduce(gray, avg_cols, 0, cv.CV_REDUCE_AVG)
 
-        # threshold for finding box edges in the picture
-        # set it between the average and max value
-        (_, c_max, _, _) = cv.MinMaxLoc(avg_cols)
-        threshold = (cv.Avg(avg_cols)[0] + c_max) / 2
-        cols = np.asarray(avg_cols)[0] > threshold
-        col_edges = self.find_runs(cols)
-
+        # do a binary search for the threshold for finding box edges in the picture
+        (c_min, c_max, _, _) = cv.MinMaxLoc(avg_cols)
         # assume the left and right of the box is detected so that adds 2 columns to ignore
-        if len(col_edges) != Params.num_cols + 3:
-            print "Found wrong number of columns:", len(col_edges) - 3
+        col_edges = self.find_threshold(np.asarray(avg_cols)[0], c_min, c_max, Params.num_cols + 3)
+
+        if col_edges == None:
+            print "Unable to find well columns"
             return False
 
         left_x = col_edges[1][0]
@@ -496,12 +493,12 @@ class BoxScanner:
 
         avg_rows = cv.CreateMat(gray.height, 1, cv.CV_8UC1)
         cv.Reduce(gray, avg_rows, 1, cv.CV_REDUCE_AVG)
-        rows = np.asarray(avg_rows)[:,0] > threshold
-        row_edges = self.find_runs(rows)
 
         # assume the top and bottom of the box is detected so that adds 2 rows to ignore
-        if len(row_edges) != Params.num_rows + 3:
-            print "Found wrong number of rows:", len(col_edges) - 3
+        row_edges = self.find_threshold(np.asarray(avg_rows)[:,0], c_min, c_max, Params.num_rows + 3)
+
+        if row_edges == None:
+            print "Unable to find well rows"
             return False
 
         # now store the coordinates of every well
@@ -851,6 +848,23 @@ class BoxScanner:
     #
     # Utility routines
     #
+
+    def find_threshold(self, data, low, high, target):
+        # data is numpy array
+        # finds a threshold between low and high
+        # such that find_runs returns target
+        while (high - low) > 2:
+            threshold = (low + high) / 2
+            condition = data > threshold
+            grouped = self.find_runs(condition)
+            if len(grouped) == target:
+                return grouped
+            elif len(grouped) < target:
+                # we make assumption here about direction of threshold with number of runs
+                high = threshold
+            else:
+                low = threshold
+        return None
 
     def find_runs(self, condition):
         # returns the start index and end index+1 of all runs
