@@ -452,51 +452,84 @@ class BoxScanner:
         # cv.ShowImage("right tab processed", right_tabs)
         # cv.WaitKey()
 
+        # find edge of tab and use as edge of wells
+        # we consider the widest/brightest thing to be the tab
+
+        # This can help reduce holes
+        cv.Dilate(left_diff, left_diff)
+        cv.Erode(left_diff, left_diff)
+        cv.Dilate(right_diff, right_diff)
+        cv.Erode(right_diff, right_diff)
+
         if left_sum < 0 and right_sum < 0:
             self.tabs_on_bottom = True
+            (left_start, left_end) = self.longest_contiguous(np.asarray(left_diff)[0] < 0)
+            (right_start, right_end) = self.longest_contiguous(np.asarray(right_diff)[0] < 0)
+            top = middle
+            bottom = self.image.height - 1
         elif left_sum > 0 and right_sum > 0:
             self.tabs_on_bottom = False
+            (left_start, left_end) = self.longest_contiguous(np.asarray(left_diff)[0] > 0)
+            (right_start, right_end) = self.longest_contiguous(np.asarray(right_diff)[0] > 0)
+            top = 0
+            bottom = middle - 1
         else:
             return False # no tabs found, fail as we cannot determine box orientation
+
         cv.ResetImageROI(self.image)
+
+        self.tabs_locations = ((left_start, top), (left_end, bottom), (right_border+right_start, top), (right_border+right_end, bottom))
+
         return True
 
     def find_wells(self):
         # finds position of all wells
 
+        left_tab_end = self.tabs_locations[1][0]
+        right_tab_start = self.tabs_locations[2][0]
+        width = right_tab_start - left_tab_end + 1
+
         # convert to grayscale
         gray = cv.CreateImage(cv.GetSize(self.image), 8, 1)
         cv.CvtColor(self.image, gray, cv.CV_BGR2GRAY)
 
+        cv.SetImageROI(gray, (left_tab_end, 0, width, self.image.height))
+        #self.debug_resize(gray)
         # find the edges of the wells
         # we expect the cols/rows that contain the well edges to be the brightest
         # we first do the cols since those edges go all the way from top to bottom
         # the left/right edges don't go all the way to the box edge
 
-        avg_cols = cv.CreateMat(1, gray.width, cv.CV_8UC1)
+        avg_cols = cv.CreateMat(1, width, cv.CV_8UC1)
         cv.Reduce(gray, avg_cols, 0, cv.CV_REDUCE_AVG)
 
         # do a binary search for the threshold for finding box edges in the picture
         (c_min, c_max, _, _) = cv.MinMaxLoc(avg_cols)
-        # assume the left and right of the box is detected so that adds 2 columns to ignore
-        col_edges = self.find_threshold(np.asarray(avg_cols)[0], c_min, c_max, Params.num_cols + 3)
+        # the left and right of the box should be removed due to truncating image at tabs
+        col_edges = self.find_threshold(np.asarray(avg_cols)[0], c_min, c_max, Params.num_cols + 1)
 
         if col_edges == None:
             print "Unable to find well columns"
             return False
 
-        left_x = col_edges[1][0]
-        right_x = col_edges[-2][1]
+        left_x = left_tab_end + col_edges[0][0]
+        right_x = left_tab_end + col_edges[-1][1]
 
-        # now find the top and bottom edge
-        cv.SetImageROI(gray, (left_x, 0, right_x - left_x + 1, gray.height))
+        # approximate where the rows should be based on well size calculated from the column edges
+        well_size = (right_x - left_x + 1) / Params.num_cols
+        # well_size/2 is extra fudge factor to make sure top and bottom rows are in picture
+        # but should not be enough that it will get the top and bottom edges of the box
+        height = Params.num_rows * well_size + well_size / 2
+        top = (self.image.height-height) / 2
 
-        avg_rows = cv.CreateMat(gray.height, 1, cv.CV_8UC1)
+        # now find the rows
+        cv.SetImageROI(gray, (left_x, top, right_x - left_x + 1, height))
+        #self.debug_resize(gray)
+
+        avg_rows = cv.CreateMat(height, 1, cv.CV_8UC1)
         cv.Reduce(gray, avg_rows, 1, cv.CV_REDUCE_AVG)
 
-        # assume the top and bottom of the box is detected so that adds 2 rows to ignore
-        row_edges = self.find_threshold(np.asarray(avg_rows)[:,0], c_min, c_max, Params.num_rows + 3)
-
+        row_edges = self.find_threshold(np.asarray(avg_rows)[:,0], c_min, c_max, Params.num_rows + 1)
         if row_edges == None:
             print "Unable to find well rows"
             return False
@@ -505,16 +538,16 @@ class BoxScanner:
 
         well_x = []
         cell_width = 0
-        for i in range(1, Params.num_cols + 1):
-            well_x.append((col_edges[i+1][0] + col_edges[i][1]) / 2)
+        for i in range(Params.num_cols):
+            well_x.append(left_tab_end + (col_edges[i+1][0] + col_edges[i][1]) / 2)
             cell_width += col_edges[i+1][0] - col_edges[i][1]
             #cv.Rectangle(self.image, (col_edges[i][1], 0), (col_edges[i+1][0], self.image.height), (255, 0, 0), 5)
         cell_width /= Params.num_cols
 
         well_y = []
         cell_height = 0
-        for i in range(1,Params.num_rows+1):
-            well_y.append((row_edges[i+1][0] + row_edges[i][1]) / 2)
+        for i in range(Params.num_rows):
+            well_y.append(top + (row_edges[i+1][0] + row_edges[i][1]) / 2)
             cell_height += row_edges[i+1][0] - row_edges[i][1]
             #cv.Rectangle(self.image, (0, row_edges[i][1]), (self.image.width, row_edges[i+1][0]), (255, 0, 0), 5)
         cell_height /= Params.num_rows
@@ -585,16 +618,10 @@ class BoxScanner:
                     count += 1
                     self.annotate_well(c, r, Params.annotate_present_color)
 
-
-        # annotate the inner rect
-        #cv.ResetImageROI(self.image)
-        #cv.Rectangle(self.image, (self.inner_rect[0], self.inner_rect[1]), (self.inner_rect[0]+self.inner_rect[2], self.inner_rect[1]+self.inner_rect[3]), Params.annotate_outside, 10)
-
         # annotate the box tabs
-        # annotate the box tabs. don't want this to enter the inner rect as it could affect later processing
-        #cv.ResetImageROI(self.image)
-        #cv.Rectangle(self.image, (0, top), (left_border-15, bottom), Params.annotate_tabs, 15)
-        #cv.Rectangle(self.image, (right_border+15, top), (self.image.width-1, bottom), Params.annotate_tabs, 15)
+        # we annotate it last to make sure the annotation doesn't affect decoding
+        cv.Rectangle(self.image, self.tabs_locations[0], self.tabs_locations[1], Params.annotate_tabs, 15)
+        cv.Rectangle(self.image, self.tabs_locations[2], self.tabs_locations[3], Params.annotate_tabs, 15)
 
         return (count, empty)
 
@@ -882,6 +909,16 @@ class BoxScanner:
             idx = np.r_[idx, condition.size]
         idx.shape = (-1,2)
         return idx
+
+    def longest_contiguous(self, condition):
+        # returns the start and end indices of the longest contiguous block
+        # in condition (numpy array) that is true
+        idx = self.find_runs(condition)
+        block_size = idx[:,1] - idx[:,0]
+        if len(block_size) == 0:
+            return (None, None)
+        i = np.argmax(block_size)
+        return tuple(idx[i])
 
     def max_contour_area(self, contours):
         max_contour = None
