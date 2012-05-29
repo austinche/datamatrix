@@ -10,7 +10,6 @@ import datamatrix
 
 class Params:
     # error prone params
-    box_pixel_threshold_factor = 2.5
     tube_well_factor = 2.5 # >= 2. closer to 2 gets more of the well which may be slower, larger may miss code
     canny_low_factor = 2
     canny_high_factor = 4
@@ -19,6 +18,7 @@ class Params:
     hough_lines_angle_resolution = 0.01 # radians
     hough_lines_threshold = 37
     dotted_stdev_max = 1.5
+    box_fill_threshold = 20
 
     # Box specific (will only work with orange tabbed boxes)
     tab_color_low = (10, 100, 100) # HSV low threshold for tabs (orange)
@@ -36,6 +36,7 @@ class Params:
     min_pixels_per_cell = 4 # each code must have at least this number of pixels on each side
     min_pixels_code_size = min_pixels_per_cell * matrix_code_size
     min_pixels_per_well = min_pixels_per_cell * matrix_code_size * tube_well_factor
+    min_box_pixels = min_pixels_per_well * num_cols * num_rows
 
     well_squareness_deviation = 10
     min_tube_radius = min_pixels_per_cell * matrix_code_size / 2 # min pixels for tube radius
@@ -338,25 +339,18 @@ class BoxScanner:
         gray = cv.CreateImage(cv.GetSize(self.image), 8, 1)
         cv.CvtColor(self.image, gray, cv.CV_BGR2GRAY)
 
-        # To find the box we calculate the histogram and assume that the number of box pixels
-        # is greater than this threshold
-        threshold = size * size / Params.box_pixel_threshold_factor
-        num_bins = 16
-        hist = cv.CreateHist([num_bins], cv.CV_HIST_ARRAY, [[0, 255]])
-        cv.SetImageROI(gray, rect)
-        cv.CalcHist([gray], hist)
-        total = 0
-        for i in range(num_bins-1,-1,-1):
-            v = cv.QueryHistValue_1D(hist, i)
-            total += v
-            if total > threshold:
-                break
 
-        cv.ResetImageROI(gray)
-        cv.Threshold(gray, gray, i * 256 / num_bins, 255, cv.CV_THRESH_BINARY)
+        mask = cv.CreateImage((self.image.width + 2, self.image.height + 2), 8, 1)
+        cv.SetZero(mask)
+        for i in range(x, x+size):
+            for j in range(y, y+size):
+                if cv.Get2D(mask, j, i)[0] == 0:
+                    (area, _, _) = cv.FloodFill(gray, (i, j), 0, Params.box_fill_threshold, Params.box_fill_threshold, cv.CV_FLOODFILL_MASK_ONLY + cv.CV_FLOODFILL_FIXED_RANGE, mask)
+                    if area > Params.min_box_pixels:
+                        break
 
         # find the bounding rectangle for the on pixels which should be the box outline
-        contours = cv.FindContours(gray, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
+        contours = cv.FindContours(mask, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
 
         if len(contours) == 0:
             return False
