@@ -24,7 +24,8 @@ class Scanner(threading.Thread):
 
     def scan(self):
         filename = "/tmp/scan.tif"
-        os.remove(filename)
+        if os.path.exists(filename):
+            os.remove(filename)
         proc = subprocess.Popen(("scanimage --batch=%s --batch-count=1 --resolution=600 --mode=color --format=tiff" % filename).split(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         out,err = proc.communicate()
         if os.path.exists(filename):

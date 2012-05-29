@@ -58,7 +58,6 @@ class ScanThread(threading.Thread):
                         if image:
                             sleep_time = 5
                     if image:
-                        print "got image"
                         count = self.box.scan(image)
                         if count == 96:
                             self.stop_scan()
