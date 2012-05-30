@@ -138,7 +138,7 @@ class MyHandler(BaseHTTPRequestHandler):
                         self.send_header('Content-length', length)
                         self.end_headers()
                         self.wfile.write(data)
-                    notify.wait(1)
+                    notify.wait(0.5)
                     notify.clear()
                 MyHandler.scanner.stop_scan()
             elif self.path.startswith("/text"):

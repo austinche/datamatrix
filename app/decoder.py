@@ -30,13 +30,14 @@ class Params:
     matrix_code_size = 12
     num_rows = 8
     num_cols = 12
+    num_wells = num_rows * num_cols
     half_pi = math.pi / 2
 
     # params unlikely to impact accuracy
     min_pixels_per_cell = 4 # each code must have at least this number of pixels on each side
     min_pixels_code_size = min_pixels_per_cell * matrix_code_size
     min_pixels_per_well = min_pixels_per_cell * matrix_code_size * tube_well_factor
-    min_box_pixels = min_pixels_per_well * num_cols * num_rows
+    min_box_pixels = min_pixels_per_well * num_wells
 
     well_squareness_deviation = 10
     min_tube_radius = min_pixels_per_cell * matrix_code_size / 2 # min pixels for tube radius
@@ -48,7 +49,7 @@ class Params:
     annotate_not_decoded = (0, 0, 255) # red
     annotate_outside = (255,255,0)
     annotate_tabs = (0,255,255)
-
+    annotate_error = (0, 0, 255) # red
 
 class TwoLines:
     # Represent two lines that form right angles in an image
@@ -235,17 +236,21 @@ class BoxScanner:
         self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
         self.image = None
         self.info_image = None
-        self.decode_info = (0, 0)
+        self.decoded_codes = 0
+        self.decoded_empty = 0
+        self.error_message = None
 
     #
     # Public methods
     #
 
     def write_box_info(self, output):
-        output.write(self.codes)
+        output.write(str(self.codes))
         output.write("\n")
-        (count, empty) = self.decode_info
-        output.write("Wells done: %d empty: %d codes: %d unknown: %d\n" % (count, empty, count - empty, 96 - count))
+        if self.error_message:
+            output.write("Error: %s\n" % self.error_message)
+        total = self.decoded_codes + self.decoded_empty
+        output.write("Wells done: %d empty: %d codes: %d unknown: %d\n" % (total, self.decoded_empty, self.decoded_codes, Params.num_wells - total))
 
     def write_code_csv(self, output):
         # write code in csv form with well (e.g. A1-H12) followed by barcode and then status
@@ -272,8 +277,6 @@ class BoxScanner:
             return None
 
         # shrink image
-        cv.ResetImageROI(image)
-
         caption_height = 40
 
         # image can be different sizes depending on if it's been cropped yet
@@ -285,10 +288,13 @@ class BoxScanner:
         # add caption text
         cv.SetImageROI(shrink, (0, height - caption_height, width, caption_height))
         cv.Set(shrink, (255, 255, 255))
-        (count, empty) = self.decode_info
-        cv.PutText(shrink, "Unknown: %d " % (96 - count), (0, 20), BoxScanner.FONT, Params.annotate_not_decoded)
-        cv.PutText(shrink, "Empty: %d " % empty, (120, 20), BoxScanner.FONT, Params.annotate_empty_color)
-        cv.PutText(shrink, "Codes: %d " % (count - empty), (220, 20), BoxScanner.FONT, Params.annotate_present_color)
+        if self.error_message:
+            cv.PutText(shrink, self.error_message, (0, 20), BoxScanner.FONT, Params.annotate_error)
+        else:
+            total = self.decoded_codes + self.decoded_empty
+            cv.PutText(shrink, "Unknown: %d " % (Params.num_wells - total), (0, 20), BoxScanner.FONT, Params.annotate_not_decoded)
+            cv.PutText(shrink, "Empty: %d " % self.decoded_empty, (120, 20), BoxScanner.FONT, Params.annotate_empty_color)
+            cv.PutText(shrink, "Codes: %d " % (self.decoded_codes), (220, 20), BoxScanner.FONT, Params.annotate_present_color)
         cv.ResetImageROI(shrink)
         return shrink
 
@@ -296,30 +302,29 @@ class BoxScanner:
         # returns count of wells decoded
 
         self.image = image
+        self.error_message = None
 
         if not self.find_box_and_rotate():
-            print "Box not found!"
             self.info_image = image
+            self.error_message = "Box not found!"
             return 0
 
+        # we crop and rotate image above
+        # after here, we don't change it
+        # we make a copy of the image for info_image so we
+        # can annotate it without worry about affecting the decoding
+        self.info_image = cv.CloneImage(self.image)
         if not self.find_orientation():
-            print "Box orientation detection failed!"
-            self.info_image = image
+            self.error_message = "Box orientation detection failed!"
             return 0
 
         if not self.find_wells():
-            print "Finding wells failed!"
-            self.info_image = image
+            self.error_message = "Finding wells failed!"
             return 0
 
-        self.decode_info = self.decode_codes()
-        (count, empty) = self.decode_info
-        self.info_image = self.image # for consistency, we need to set this image after the above decoding annotates everything
+        self.decode_codes()
 
-        print self.codes
-        print "Wells done:", count, "empty:", empty, "codes:", count - empty, "unknown:", Params.num_cols * Params.num_rows - count
-
-        return count
+        return self.decoded_empty + self.decoded_codes
 
     #
     # Decoding methods
@@ -472,15 +477,19 @@ class BoxScanner:
 
         cv.ResetImageROI(self.image)
 
-        self.tabs_locations = ((left_start, top), (left_end, bottom), (right_border+right_start, top), (right_border+right_end, bottom))
+        self.tab_locations = (left_end, right_border+right_start)
+
+        # annotate the box tabs
+        cv.Rectangle(self.info_image, (left_start, top), (left_end, bottom), Params.annotate_tabs, 15)
+        cv.Rectangle(self.info_image, (right_border+right_start, top), (right_border+right_end, bottom), Params.annotate_tabs, 15)
 
         return True
 
     def find_wells(self):
         # finds position of all wells
 
-        left_tab_end = self.tabs_locations[1][0]
-        right_tab_start = self.tabs_locations[2][0]
+        left_tab_end = self.tab_locations[0]
+        right_tab_start = self.tab_locations[1]
         width = right_tab_start - left_tab_end + 1
 
         # convert to grayscale
@@ -567,7 +576,6 @@ class BoxScanner:
 
     def decode_codes(self):
         # decode every well in the box
-        # returns count of number decoded
 
         # make images that we can reuse for every well
         self.well_size = 2 * self.tube_radius
@@ -578,8 +586,8 @@ class BoxScanner:
         cv.SetZero(self.well_mask)
         cv.Circle(self.well_mask, (self.tube_radius, self.tube_radius), self.tube_radius, 255, -1)
 
-        count = 0
-        empty = 0
+        self.decoded_codes = 0
+        self.decoded_empty = 0
         for c in range(Params.num_cols):
             for r in range(Params.num_rows):
                 # map to box location depending on its orientation
@@ -596,28 +604,20 @@ class BoxScanner:
                 # so we still repeat the empty well test
                 if self.codes[box_r][box_c]:
                     self.annotate_well(c, r, Params.annotate_present_color)
-                    count += 1
+                    self.decoded_codes += 1
                     continue
 
                 result = self.decode_code(c, r)
                 if result == False:
                     self.codes[box_r][box_c] = False
-                    empty += 1
-                    count += 1
+                    self.decoded_empty += 1
                     self.annotate_well(c, r, Params.annotate_empty_color)
                 elif result == None:
                     self.annotate_well(c, r, Params.annotate_not_decoded)
                 else:
                     self.codes[box_r][box_c] = result
-                    count += 1
+                    self.decoded_codes += 1
                     self.annotate_well(c, r, Params.annotate_present_color)
-
-        # annotate the box tabs
-        # we annotate it last to make sure the annotation doesn't affect decoding
-        cv.Rectangle(self.image, self.tabs_locations[0], self.tabs_locations[1], Params.annotate_tabs, 15)
-        cv.Rectangle(self.image, self.tabs_locations[2], self.tabs_locations[3], Params.annotate_tabs, 15)
-
-        return (count, empty)
 
     def decode_code(self, col, row):
         # Decode a single code at the given location
@@ -851,8 +851,7 @@ class BoxScanner:
 
     def annotate_well(self, x, y, color):
         # annotate a particular well with some color circle
-        cv.ResetImageROI(self.image)
-        cv.Circle(self.image, (self.well_x[x], self.well_y[y]), self.tube_radius + 15, color, 15)
+        cv.Circle(self.info_image, (self.well_x[x], self.well_y[y]), self.tube_radius + 15, color, 15)
 
     def datamatrix_decode(self, bits):
         try:
