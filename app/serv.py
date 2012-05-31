@@ -46,7 +46,7 @@ class ScanThread(threading.Thread):
     def run(self):
         while self.running:
             try:
-                if self.scanning and self.attempt_count < 100:
+                if self.scanning and self.attempt_count < 1000:
                     sleep_time = 10
                     image = self.camera.frame()
                     if image:
@@ -54,9 +54,9 @@ class ScanThread(threading.Thread):
                         self.attempt_count += 1
                     else:
                         image = self.scanner.image()
-                        self.attempt_count += 10
                         if image:
                             sleep_time = 5
+                            self.attempt_count += 50
                     if image:
                         count = self.box.scan(image)
                         if count == 96:
