@@ -14,13 +14,11 @@ class Params:
     canny_low_high_ratio = 2
     canny_high_thresholds = [1000, 500, 250]
     lines_giveup_threshold = 3
-    well_empty_threshold = 0.5 # higher is safer
     hough_lines_distance_resolution = 1 # pixels
     hough_lines_angle_resolution = 0.01 # radians
     hough_lines_threshold = 37
     dotted_pixel_range = 4
     box_fill_threshold = 20
-    well_fill_threshold = 10
     code_pixel_tolerance = 4
 
     # Box specific (will only work with orange tabbed boxes)
@@ -607,11 +605,9 @@ class BoxScanner:
         self.well = cv.CreateImage((self.well_size, self.well_size), 8, 1)
         self.edges = cv.CreateImage((self.well_size, self.well_size), 8, 1)
         self.well_mask = cv.CreateImage((self.well_size, self.well_size), 8, 1)
-        self.well_fill_mask = cv.CreateImage((self.well_size+2, self.well_size+2), 8, 1)
         cv.SetZero(self.well)
         cv.SetZero(self.well_mask)
         cv.Circle(self.well_mask, (self.tube_radius, self.tube_radius), self.tube_radius, 255, -1)
-        self.well_empty_threshold = self.well_size * self.well_size * Params.well_empty_threshold
 
         self.decoded_codes = 0
         self.decoded_empty = 0
@@ -655,15 +651,6 @@ class BoxScanner:
         well_rect = (offset_x, offset_y, self.well_size, self.well_size)
 
         cv.SetImageROI(self.gray, well_rect)
-
-        # to determine if the well is empty
-        # we flood fill from middle of well
-        # we assume that if tube is present, the middle of the well
-        # will be in the tube and the flood fill will not leak out of the tube
-        cv.SetZero(self.well_fill_mask)
-        (area, _, _) = cv.FloodFill(self.gray, (self.tube_radius, self.tube_radius), 0, Params.well_fill_threshold, Params.well_fill_threshold, cv.CV_FLOODFILL_MASK_ONLY + cv.CV_FLOODFILL_FIXED_RANGE, self.well_fill_mask)
-        if area > self.well_empty_threshold:
-            return False
 
         # use grayscale image and mask out everything but the tube
         cv.Copy(self.gray, self.well, self.well_mask)
