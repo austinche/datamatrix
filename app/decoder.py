@@ -10,15 +10,18 @@ import datamatrix
 
 class Params:
     # error prone params
-    tube_well_factor = 2.5 # >= 2. closer to 2 gets more of the well which may be slower, larger may miss code
-    canny_low_factor = 2
-    canny_high_factor = 4
-    well_empty_threshold = 15
+    tube_well_factor = 5 # >= 4. closer to 4 gets more of the well which may be slower, larger may miss code
+    canny_low_high_ratio = 2
+    canny_high_thresholds = [1000, 500, 250]
+    lines_giveup_threshold = 3
+    well_empty_threshold = 0.5 # higher is safer
     hough_lines_distance_resolution = 1 # pixels
     hough_lines_angle_resolution = 0.01 # radians
     hough_lines_threshold = 37
-    dotted_stdev_max = 1.5
+    dotted_pixel_range = 4
     box_fill_threshold = 20
+    well_fill_threshold = 10
+    code_pixel_tolerance = 4
 
     # Box specific (will only work with orange tabbed boxes)
     tab_color_low = (10, 100, 100) # HSV low threshold for tabs (orange)
@@ -35,11 +38,9 @@ class Params:
 
     # params unlikely to impact accuracy
     min_pixels_per_cell = 4 # each code must have at least this number of pixels on each side
-    min_pixels_code_size = min_pixels_per_cell * matrix_code_size
-    min_pixels_per_well = min_pixels_per_cell * matrix_code_size * tube_well_factor
-    min_box_pixels = min_pixels_per_well * num_wells
+    min_pixels_code_side = min_pixels_per_cell * matrix_code_size
+    min_box_pixels = min_pixels_code_side * num_wells * 4
 
-    well_squareness_deviation = 10
     min_tube_radius = min_pixels_per_cell * matrix_code_size / 2 # min pixels for tube radius
 
     # Preferences
@@ -53,23 +54,24 @@ class Params:
 
 class TwoLines:
     # Represent two lines that form right angles in an image
-    def __init__(self, image, line1, line2):
+    def __init__(self, image, min_pixels, line1, line2):
         # lines should be in (rho, theta) form
+        self.min_pixels = min_pixels
         self.line1 = line1
         self.line2 = line2
         self.image = image
 
-        (self.m1, self.b1) = self.polar2cart(line1)
-        (self.m2, self.b2) = self.polar2cart(line2)
+        (self.line1p1, self.line1p2) = self.polar2cart(line1)
+        (self.line2p1, self.line2p2) = self.polar2cart(line2)
         self.corner = self.intersection()
 
-        (self.line1end, self.line1dist, self.line1score) = self.find_line_end(self.image, self.corner, self.m1, self.b1)
-        (self.line2end, self.line2dist, self.line2score) = self.find_line_end(self.image, self.corner, self.m2, self.b2)
+        (self.line1end, self.line1dist, self.line1score) = self.find_line_end(self.image, self.corner, self.line1p1, self.line1p2)
+        (self.line2end, self.line2dist, self.line2score) = self.find_line_end(self.image, self.corner, self.line2p1, self.line2p2)
 
         self.score = self.calc_score()
 
     def __repr__(self):
-        return repr(((self.m1, self.b1), (self.m2, self.b2)))
+        return repr(((self.line1p1, self.line1p2), (self.line2p1, self.line2p2)))
 
     def __lt__(self, other):
         return self.score > other.score
@@ -83,6 +85,9 @@ class TwoLines:
         return self.line1dist * self.line2dist
 
     def annotate(self, image):
+        if self.corner == None or self.line1end == None or self.line2end == None:
+            print "Points are None"
+            return
         cv.Line(image, self.int_point(self.line1end), self.int_point(self.corner), (0,0,255), 1)
         cv.Line(image, self.int_point(self.line2end), self.int_point(self.corner), (0,0,255), 1)
         cv.Circle(image, self.int_point(self.corner), 1, (0, 255, 0), 1)
@@ -93,11 +98,11 @@ class TwoLines:
         return (cv.Round(point[0]), cv.Round(point[1]))
 
     @staticmethod
-    def best_lines(image, line1s, line2s):
+    def best_lines(image, min_pixels, line1s, line2s):
         # given a list of lines in line1s and line2s
         # returns the TwoLines object that is the best right angle or None
         best = min(itertools.product(line1s, line2s), key=TwoLines.right_angledness)
-        return TwoLines(image, best[0], best[1])
+        return TwoLines(image, min_pixels, best[0], best[1])
 
     @staticmethod
     def right_angledness(x):
@@ -112,22 +117,32 @@ class TwoLines:
         return diff
 
     def polar2cart(self, line):
-        # convert line from (rho, theta) to y = mx + b form
+        # convert line from (rho, theta) to (x1, y1), (x2, y2) form
         rho = line[0]
         theta = line[1]
-
-        # simplest way to not deal with division by zeros
-        if theta == 0:
-            theta = sys.float_info.epsilon
-
-        m = -1/math.tan(theta)
-        b = rho / math.sin(theta)
-        return (m, b)
+        a = math.cos(theta)
+        b = math.sin(theta)
+        x1 = a * rho
+        y1 = b * rho
+        x2 = x1 - 1000 * b
+        y2 = y1 + 1000 * a
+        return ((x1, y1), (x2, y2))
 
     def intersection(self):
         # returns the intersection of the 2 lines
-        x = (self.b2 - self.b1) / (self.m1 - self.m2)
-        return (x, self.m1 * x + self.b1)
+        # http://en.wikipedia.org/wiki/Line-line_intersection
+        (x1, y1) = self.line1p1
+        (x2, y2) = self.line1p2
+        (x3, y3) = self.line2p1
+        (x4, y4) = self.line2p2
+        d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if d == 0:
+            return None
+
+        a = (x1 * y2 - y1 * x2)
+        b = (x3 * y4 - y3 * x4)
+        return ((a * (x3 - x4) - (x1 - x2) * b) / d,
+                (a * (y3 - y4) - (y1 - y2) * b) / d)
 
     def sum_pixels(self, image, start_point, end_point):
         # goes from start_point to end_point
@@ -145,44 +160,53 @@ class TwoLines:
             threshold = total / count / 2
         return total
 
-    def find_line_end(self, image, corner, m, b):
-        # find the end of line from corner for the line y=mx + b
-        # that intersects the edge of the image
+    def find_line_end(self, image, corner, point1, point2):
+        # find the end of line from corner for the line between 2 points
+        # that intersects a circle enclosed in the image
+        # (x-r)^2+(y-r)^2=r^2
 
-        if m == 0:
-            # vertical line
-            if b >= 0 and b < image.width:
-                points = [(b, 0), (b, image.height-1)]
-        else:
-            points = []
-            if b >= 0 and b < image.height:
-                points.append((0, b)) # y-intercept
-            if m * image.height + b >= 0 and m * image.height + b < image.height:
-                points.append((image.width-1, m * image.height + b)) # right edge intercept
+        # http://mathworld.wolfram.com/Circle-LineIntersection.html
 
-            if -b/m >= 0 and -b/m < image.width:
-                points.append((- b/m, 0)) # x-intercept
-            if (image.width-b)/m >= 0 and (image.width-b)/m < image.width:
-                    points.append(((image.width-b)/m, image.height-1)) # bottom edge intercept
+        r = image.width / 2
+        r2 = r * r
 
-        if len(points) != 2:
+        # shift origin to center of circle
+        x1 = point1[0] - r
+        y1 = point1[1] - r
+        x2 = point2[0] - r
+        y2 = point2[1] - r
+        dx = x2 - x1
+        dy = y2 - y1
+        dr = math.sqrt(dx * dx + dy * dy)
+        D = x1 * y2 - x2 * y1
+        dr2 = dr * dr
+        delta = r2 * dr2 - D * D
+
+        if delta <= 0:
+            # if line doesn't intersect circle at 2 points, it's definitely wrong
             return (None, 0, 0)
+
+        sgn_dy = -1 if dy < 0 else 1
+        sqrt_delta = math.sqrt(delta)
+        a1 = sgn_dy * dx * sqrt_delta
+        b1 = abs(dy) * sqrt_delta
+        points = [(r+(D * dy + a1) / dr2, r+(-D * dx + b1) / dr2), (r + (D * dy - a1) / dr2, r + (-D * dx - b1) / dr2)]
 
         # calculate the distances for each point
         # if any are too short, we eliminate them
         dist1 = math.hypot(points[0][0]-corner[0], points[0][1]-corner[1])
         dist2 = math.hypot(points[1][0]-corner[0], points[1][1]-corner[1])
 
-        if dist1 < Params.min_pixels_code_size and dist2 < Params.min_pixels_code_size:
+        if dist1 < self.min_pixels and dist2 < self.min_pixels:
             return (None, 0, 0)
 
         score1 = self.sum_pixels(image, self.int_point(corner), self.int_point(points[0]))
         score2 = self.sum_pixels(image, self.int_point(corner), self.int_point(points[1]))
 
-        if dist1 < Params.min_pixels_code_size:
+        if dist1 < self.min_pixels:
             return (points[1], dist2, score2)
         else:
-            if dist2 < Params.min_pixels_code_size:
+            if dist2 < self.min_pixels:
                 return (points[0], dist1, score1)
             else:
                 # both points could be correct
@@ -211,7 +235,6 @@ class TwoLines:
             br_corner = self.line2end
             width = self.line2dist
 
-
         img_width = cv.Ceil(width)
         img_height = cv.Ceil(height)
 
@@ -239,6 +262,8 @@ class BoxScanner:
         self.decoded_codes = 0
         self.decoded_empty = 0
         self.error_message = None
+        self.code_min_pixels = Params.min_pixels_code_side
+        self.code_size_range = None
 
     #
     # Public methods
@@ -344,15 +369,19 @@ class BoxScanner:
         gray = cv.CreateImage(cv.GetSize(self.image), 8, 1)
         cv.CvtColor(self.image, gray, cv.CV_BGR2GRAY)
 
-
         mask = cv.CreateImage((self.image.width + 2, self.image.height + 2), 8, 1)
         cv.SetZero(mask)
+        area = 0
         for i in range(x, x+size):
             for j in range(y, y+size):
                 if cv.Get2D(mask, j, i)[0] == 0:
                     (area, _, _) = cv.FloodFill(gray, (i, j), 0, Params.box_fill_threshold, Params.box_fill_threshold, cv.CV_FLOODFILL_MASK_ONLY + cv.CV_FLOODFILL_FIXED_RANGE, mask)
                     if area > Params.min_box_pixels:
                         break
+            if area > Params.min_box_pixels:
+                break
+
+        mask = cv.GetSubRect(mask, (1, 1, self.image.width, self.image.height))
 
         # find the bounding rectangle for the on pixels which should be the box outline
         contours = cv.FindContours(mask, cv.CreateMemStorage(), cv.CV_RETR_EXTERNAL)
@@ -373,7 +402,7 @@ class BoxScanner:
         if height > width:
             (width, height) = rect[1]
 
-        if height < Params.min_pixels_per_well * Params.num_rows or width < Params.min_pixels_per_well * Params.num_cols:
+        if height < Params.min_pixels_code_side * Params.num_rows or width < Params.min_pixels_code_side * Params.num_cols:
             return False
 
         self.image = self.crop_and_rotate(self.image, rect)
@@ -477,7 +506,7 @@ class BoxScanner:
 
         cv.ResetImageROI(self.image)
 
-        self.tab_locations = (left_end, right_border+right_start)
+        self.tab_locations = (left_start, right_border+right_end)
 
         # annotate the box tabs
         cv.Rectangle(self.info_image, (left_start, top), (left_end, bottom), Params.annotate_tabs, 15)
@@ -555,11 +584,7 @@ class BoxScanner:
             #cv.Rectangle(self.image, (0, row_edges[i][1]), (self.image.width, row_edges[i+1][0]), (255, 0, 0), 5)
         cell_height /= Params.num_rows
 
-        if abs(cell_width - cell_height) > Params.well_squareness_deviation:
-            print "Wells are not square:", cell_width, cell_height
-            return False
-
-        self.tube_radius = int(max(cell_width, cell_height) / Params.tube_well_factor)
+        self.tube_radius = int((cell_width + cell_height) / Params.tube_well_factor)
 
         if self.tube_radius < Params.min_tube_radius:
             print "Tubes are too small:", self.tube_radius
@@ -582,9 +607,11 @@ class BoxScanner:
         self.well = cv.CreateImage((self.well_size, self.well_size), 8, 1)
         self.edges = cv.CreateImage((self.well_size, self.well_size), 8, 1)
         self.well_mask = cv.CreateImage((self.well_size, self.well_size), 8, 1)
+        self.well_fill_mask = cv.CreateImage((self.well_size+2, self.well_size+2), 8, 1)
         cv.SetZero(self.well)
         cv.SetZero(self.well_mask)
         cv.Circle(self.well_mask, (self.tube_radius, self.tube_radius), self.tube_radius, 255, -1)
+        self.well_empty_threshold = self.well_size * self.well_size * Params.well_empty_threshold
 
         self.decoded_codes = 0
         self.decoded_empty = 0
@@ -627,40 +654,43 @@ class BoxScanner:
         offset_y = self.well_y[row] - self.tube_radius
         well_rect = (offset_x, offset_y, self.well_size, self.well_size)
 
-        cv.SetImageROI(self.image, well_rect)
         cv.SetImageROI(self.gray, well_rect)
 
-        # use grayscale image and mask out everything but the tubes
-        cv.Copy(self.gray, self.well, self.well_mask)
-
-        #self.debug(self.well)
-
-        cv.Erode(self.well, self.well) # remove background noise
-        cv.Dilate(self.well, self.well, iterations=1) # make the code image brighter and edges bigger
-
-        # Get edges
-        # use average intensity to set canny thresholds
-        avg = cv.Avg(self.well)[0]
-        cv.Canny(self.well, self.edges, Params.canny_low_factor * avg, Params.canny_high_factor * avg)
-        if cv.Avg(self.edges)[0] < Params.well_empty_threshold:
-            # call the well empty
+        # to determine if the well is empty
+        # we flood fill from middle of well
+        # we assume that if tube is present, the middle of the well
+        # will be in the tube and the flood fill will not leak out of the tube
+        cv.SetZero(self.well_fill_mask)
+        (area, _, _) = cv.FloodFill(self.gray, (self.tube_radius, self.tube_radius), 0, Params.well_fill_threshold, Params.well_fill_threshold, cv.CV_FLOODFILL_MASK_ONLY + cv.CV_FLOODFILL_FIXED_RANGE, self.well_fill_mask)
+        if area > self.well_empty_threshold:
             return False
 
-        lines = self.find_lines()
+        # use grayscale image and mask out everything but the tube
+        cv.Copy(self.gray, self.well, self.well_mask)
 
-        # try every line in turn
-        for twolines in lines:
-            code = self.decode_code_with_lines(twolines)
-            if code != None:
-                return code
+        # Get edges
+        has_lines = False
+        for high_threshold in Params.canny_high_thresholds:
+            cv.Canny(self.well, self.edges, high_threshold / Params.canny_low_high_ratio, high_threshold)
+            lines = self.find_lines()
+            if len(lines) > 0:
+                has_lines = True
+                for twolines in lines:
+                    code = self.decode_code_with_lines(twolines)
+                    if code != None:
+                        return code
+            if len(lines) > Params.lines_giveup_threshold:
+                break
 
+        if not has_lines:
+            return False # declare well empty
         return None
 
-    def find_lines(self):
+    def find_lines(self, threshold=Params.hough_lines_threshold):
         # processes the self.well image to find the two solid edge lines of the code
 
         # find the 2 solid lines of the code
-        lines = cv.HoughLines2(self.edges, cv.CreateMemStorage(), cv.CV_HOUGH_STANDARD, Params.hough_lines_distance_resolution, Params.hough_lines_angle_resolution, Params.hough_lines_threshold)
+        lines = cv.HoughLines2(self.edges, cv.CreateMemStorage(), cv.CV_HOUGH_STANDARD, Params.hough_lines_distance_resolution, Params.hough_lines_angle_resolution, threshold)
 
         if len(lines) == 0:
             return []
@@ -715,7 +745,7 @@ class BoxScanner:
         angles = map(lambda x: list(itertools.product(x[0].values(), x[1].values())), angles)
 
         # flatten and get best angle pairs for each group
-        lines = [TwoLines.best_lines(self.well, pair[0], pair[1]) for a in angles for pair in a]
+        lines = [TwoLines.best_lines(self.well, self.code_min_pixels, pair[0], pair[1]) for a in angles for pair in a]
 
         lines.sort()
 
@@ -732,122 +762,134 @@ class BoxScanner:
         # image now has solid edges found and rotated with corner in bottom left
 
         # find the top/right corner
-        # we assume a perfect square for the code
-        max_size = min(self.well_code.rows, self.well_code.cols)
-        top = self.well_code.rows - Params.min_pixels_code_size
-        right = Params.min_pixels_code_size
-        for size in range(Params.min_pixels_code_size, max_size):
-            code = self.decode_code_with_corner((right, top))
-            if code != None:
-                return code
-            top -= 1
-            right += 1
 
-        #self.debug(self.well_code)
+        if self.code_size_range == None:
+            size_range = range(self.code_min_pixels, min(self.well_code.cols, self.well_code.rows))
+        else:
+            size_range = self.code_size_range
+
+        top_dotted = None
+        for height in size_range:
+            top_dotted = self.find_row_edge(height)
+            if top_dotted != None:
+                break
+
+        if top_dotted == None:
+            return None
+
+        right_dotted = None
+        for width in size_range:
+            right_dotted = self.find_col_edge(width)
+            if right_dotted != None:
+                break
+        if right_dotted == None:
+            return None
+
+        code = self.decode_code_with_coordinates(top_dotted, right_dotted)
+
+        if code != None and self.code_size_range == None:
+            lower = min(height, width)
+            upper = max(height, width)
+            self.code_min_pixels = lower - Params.code_pixel_tolerance
+            self.code_size_range = range(lower, upper+1)
+            for i in range(1,Params.code_pixel_tolerance):
+                self.code_size_range.append(upper + i)
+                self.code_size_range.append(lower - i)
 
         #twolines.annotate(cv.CloneImage(self.image))
 
         #cv.ShowImage("well", self.well)
         #self.debug(self.well_code)
-        return None
+        return code
 
-    def decode_code_with_corner(self, corner):
-        # well_code image should be rotated with solid edges in bottom left
-        # attempt to use given corner as upper right location
-        data = cv.GetSubRect(self.well_code, (0, corner[1], corner[0] + 1, self.well_code.rows - corner[1]))
+    def find_row_edge(self, height):
+        if height <= 0 or height > self.well_code.rows:
+            return None
 
-        #self.debug(data)
+        width = min(self.well_code.cols, height + Params.code_pixel_tolerance)
+        row = cv.GetRow(self.well_code, self.well_code.rows - height)
+        row = cv.GetSubRect(row, (0, 0, width, 1))
 
         # use Otsu auto-threshold to convert to binary data
         # and search for the dotted pattern
-        top = cv.GetRow(data, 0)
-        tmp = cv.CreateMat(1, top.cols, cv.CV_8UC1)
-        cv.Threshold(top, tmp, 0, 255, cv.CV_THRESH_BINARY + cv.CV_THRESH_OTSU)
-        top = np.asarray(tmp)[0] > 0
-        # sometimes the edge data is incorrect if we didn't cut perfectly
-        # so we fix it up
-        if not top[0] and top[1]:
-            top[0] = True
-        top_dotted = self.is_dotted_edge(top)
+        tmp = cv.CreateMat(1, row.cols, cv.CV_8UC1)
+        cv.Threshold(row, tmp, 0, 255, cv.CV_THRESH_BINARY + cv.CV_THRESH_OTSU)
+        data = np.asarray(tmp)[0] > 0
+        return self.calc_dottedness(data)
 
-        if top_dotted == None or top_dotted[1] > Params.dotted_stdev_max:
+    def find_col_edge(self, width):
+        if width < 0 or width >= self.well_code.cols:
             return None
 
-        right = cv.GetCol(data, data.cols-1)
-        tmp = cv.CreateMat(right.rows, 1, cv.CV_8UC1)
-        cv.Threshold(right, tmp, 0, 255, cv.CV_THRESH_BINARY + cv.CV_THRESH_OTSU)
-        right = np.rot90(np.asarray(tmp))[0] > 0
-        if not right[-1] and right[-2]:
-            right[-1] = True
-        right_dotted = self.is_dotted_edge(right)
-        if right_dotted == None or right_dotted[1] > Params.dotted_stdev_max:
-            return None
+        height = min(self.well_code.rows, width + Params.code_pixel_tolerance)
+        col = cv.GetCol(self.well_code, width)
+        col = cv.GetSubRect(col, (0, col.rows-height, 1, height))
 
-        # now we can finally do the decoding
+        tmp = cv.CreateMat(col.rows, 1, cv.CV_8UC1)
+        cv.Threshold(col, tmp, 0, 255, cv.CV_THRESH_BINARY + cv.CV_THRESH_OTSU)
+        data = np.fliplr(np.rot90(np.asarray(tmp)))[0] > 0
+        return self.calc_dottedness(data)
+
+    def decode_code_with_coordinates(self, top_dotted, right_dotted):
+        # Note coordinates for right dotted are from the bottom of the image
+
+        height = right_dotted[-1] + 5 # need to add at least 3, add a bit more to aid debugging
+        width = top_dotted[-1] + 5
+        data = cv.GetSubRect(self.well_code, (0, self.well_code.rows-height, width, height))
+
         tmp = cv.CreateMat(data.rows, data.cols, cv.CV_8UC1)
         cv.Threshold(data, tmp, 0, 255, cv.CV_THRESH_BINARY + cv.CV_THRESH_OTSU)
 
         # convert to boolean matrix
         data = np.asarray(tmp) > 0
 
-        col_x = top_dotted[0]
-        row_y = right_dotted[0]
-
         # calculate value for every cell
         # we take the average of a 3x3 square around each pixel
         bits = []
-        for r in range(Params.matrix_code_size-2):
+        for r in range(Params.matrix_code_size-3,-1,-1):
             rowbits = []
             for c in range(Params.matrix_code_size-2):
-                y = row_y[r]
-                x = col_x[c]
+                y = height - right_dotted[r] - 1
+                x = top_dotted[c]
                 cell = data[y-1:y+2,x-1:x+2]
 
                 rowbits.append(np.count_nonzero(cell) > 4)
             bits.append(rowbits)
 
+        # print bits
+        # self.debug(tmp)
         return self.datamatrix_decode(bits)
 
-    def calc_dottedness(self, idx):
-        # add the False ranges
+    def calc_dottedness(self, data):
+        # expects row to start with True (solid edge)
+        # returns means indicating center coordinates
+
+        idx = self.find_runs(data)
+        if len(idx) < Params.matrix_code_size / 2:
+            # not a dotted row
+            return None
+
+        # we skip the first true range which should be the solid edge
         means = []
         ranges = []
-        # the row/col start with different True/False so we have to handle both
-        # for simplicity, we add additional True blocks to beginning or end
-        if idx[0][0] == 0:
-            last = idx[-1][1]
-            idx = np.r_[idx, np.array([[last, last+1]])]
-        else:
-            idx = np.r_[np.array([[-1, 0]]), idx]
-        for i in range(Params.matrix_code_size/2):
+        min_range = idx[0][1] - idx[0][0]
+        max_range = idx[0][1] - idx[0][0]
+        for i in range(Params.matrix_code_size/2-1):
             false_begin = idx[i][1]
             false_end = idx[i+1][0] - 1
             true_begin = idx[i+1][0]
             true_end = idx[i+1][1] - 1
             means.append((false_begin + false_end) / 2)
             means.append((true_begin + true_end) / 2)
-            ranges.append(false_end - false_begin + 1)
-            ranges.append(true_end - true_begin + 1)
-
-        # we remove the pseudo square we added at the beginning
-        if idx[0][0] == 0:
-            means = means[:-2]
-            ranges = ranges[:-2]
-        else:
-            means = means[1:-1]
-            ranges = ranges[1:-1]
-
-        return (means, np.std(np.array(ranges)))
-
-    def is_dotted_edge(self, row):
-        # row should alternate between True/False
-        # returns (mean, std) indicating quality of dottedness
-        idx = self.find_runs(row)
-        if len(idx) < Params.matrix_code_size / 2:
-            # not a dotted row
-            return None
-        else:
-            return self.calc_dottedness(idx)
+            false_range = false_end - false_begin + 1
+            true_range = true_end - true_begin + 1
+            min_range = min(min_range, true_range, false_range)
+            max_range = max(max_range, true_range, false_range)
+            if max_range > min_range + Params.dotted_pixel_range:
+                return None
+        if means[-1] < self.code_min_pixels - Params.code_pixel_tolerance:
+            return None # too small to be the code
+        return means
 
     def annotate_well(self, x, y, color):
         # annotate a particular well with some color circle
@@ -884,6 +926,7 @@ class BoxScanner:
                 high = threshold
             else:
                 low = threshold
+
         return None
 
     def find_runs(self, condition):
