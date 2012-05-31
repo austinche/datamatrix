@@ -7,7 +7,8 @@ INTERFACE:
 
 replace {command} with:       in order to:
 
-      /cam                     start a scan and show image of current camera
+      /cam                     start a scan and show images as video (MJPEG)
+      /text                    start a scan and show results as text
       /                        view CSV of most-recently decoded
 """
 
@@ -46,7 +47,7 @@ class ScanThread(threading.Thread):
     def run(self):
         while self.running:
             try:
-                if self.scanning and self.attempt_count < 1000:
+                if self.scanning and self.attempt_count < 500:
                     sleep_time = 10
                     image = self.camera.frame()
                     if image:
@@ -58,9 +59,9 @@ class ScanThread(threading.Thread):
                             sleep_time = 5
                             self.attempt_count += 50
                     if image:
-                        count = self.box.scan(image)
-                        if count == 96:
-                            self.stop_scan()
+                        # we will loop forever as long as we detect a box
+                        if self.box.scan(image):
+                            self.attempt_count = 0
                         if self.notify:
                             self.notify.set()
                     self.event.wait(sleep_time)
