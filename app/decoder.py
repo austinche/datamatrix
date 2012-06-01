@@ -257,8 +257,6 @@ class BoxScanner:
         self.codes = [[None for j in range(Params.num_cols)] for i in range(Params.num_rows)]
         self.image = None
         self.info_image = None
-        self.verified_image = None
-        self.verifying = False
         self.decoded_codes = 0
         self.decoded_empty = 0
         self.error_message = None
@@ -297,10 +295,6 @@ class BoxScanner:
         # resizes to the given size
         # uses part of the image to add a caption
 
-        # in verifying mode, we keep showing the last image unless something has changed
-        if self.verifying and self.verified_image != None:
-            return self.verified_image
-
         image = self.info_image
         if image == None:
             return None
@@ -325,13 +319,10 @@ class BoxScanner:
             cv.PutText(shrink, "Empty: %d " % self.decoded_empty, (120, 20), BoxScanner.FONT, Params.annotate_empty_color)
             cv.PutText(shrink, "Codes: %d " % (self.decoded_codes), (220, 20), BoxScanner.FONT, Params.annotate_present_color)
         cv.ResetImageROI(shrink)
-
-        if self.verifying:
-            self.verified_image = shrink
         return shrink
 
     def scan(self, image):
-        # returns True if a box is detected
+        # returns count of wells decoded
 
         self.image = image
         self.error_message = None
@@ -339,7 +330,7 @@ class BoxScanner:
         if not self.find_box_and_rotate():
             self.info_image = image
             self.error_message = "Box not found!"
-            return False
+            return 0
 
         # we crop and rotate image above
         # after here, we don't change it
@@ -348,22 +339,15 @@ class BoxScanner:
         self.info_image = cv.CloneImage(self.image)
         if not self.find_orientation():
             self.error_message = "Box orientation detection failed!"
-            return False
+            return 0
 
         if not self.find_wells():
             self.error_message = "Finding wells failed!"
-            return False
+            return 0
 
         self.decode_codes()
 
-        # once we've gotten every well, we go into verify mode
-        # where we decode again every well and only panic if something has changed
-        if self.decoded_codes + self.decoded_empty == Params.num_rows * Params.num_cols:
-            self.verifying = True
-        else:
-            self.verifying = False
-
-        return True
+        return self.decoded_empty + self.decoded_codes
 
     #
     # Decoding methods
@@ -622,8 +606,6 @@ class BoxScanner:
         cv.SetZero(self.well_mask)
         cv.Circle(self.well_mask, (self.tube_radius, self.tube_radius), self.tube_radius, 255, -1)
 
-        box_changed = False
-
         self.decoded_codes = 0
         self.decoded_empty = 0
         for c in range(Params.num_cols):
@@ -640,40 +622,19 @@ class BoxScanner:
                 # we assume if we decoded a code, it's impossible that it's incorrect
                 # however, if called something empty before, we could be wrong
                 # so we still repeat the empty well test
-                # in verifying mode, we always decode
-                if not box_changed and not self.verifying and self.codes[box_r][box_c]:
+                if self.codes[box_r][box_c]:
                     self.annotate_well(c, r, Params.annotate_present_color)
                     self.decoded_codes += 1
                     continue
 
                 result = self.decode_code(c, r)
                 if result == False:
-                    if self.verifying and self.codes[box_r][box_c] != False:
-                        self.verified_image = None
-                        box_changed = True
                     self.codes[box_r][box_c] = False
                     self.decoded_empty += 1
                     self.annotate_well(c, r, Params.annotate_empty_color)
                 elif result == None:
-                    if self.verifying:
-                        # if we've noticed the box has changed, then for any
-                        # error in decoding, we assume that this well is no longer known
-                        # otherwise, we assume it's the same as what it was before
-                        if box_changed:
-                            self.codes[box_r][box_c] = None
-                            self.annotate_well(c, r, Params.annotate_not_decoded)
-                        elif not self.codes[box_r][box_c]:
-                            self.decoded_empty += 1
-                            self.annotate_well(c, r, Params.annotate_empty_color)
-                        else:
-                            self.decoded_codes += 1
-                            self.annotate_well(c, r, Params.annotate_present_color)
-                    else:
-                        self.annotate_well(c, r, Params.annotate_not_decoded)
+                    self.annotate_well(c, r, Params.annotate_not_decoded)
                 else:
-                    if self.verifying and self.codes[box_r][box_c] != result:
-                        self.verified_image = None
-                        box_changed = True
                     self.codes[box_r][box_c] = result
                     self.decoded_codes += 1
                     self.annotate_well(c, r, Params.annotate_present_color)
