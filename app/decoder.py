@@ -10,7 +10,7 @@ import datamatrix
 
 class Params:
     # error prone params
-    tube_well_factor = 5 # >= 4. closer to 4 gets more of the well which may be slower, larger may miss code
+    tube_well_factor = 2.3 # >= 2. closer to 2 gets more of the well which may be slower, larger may miss code
     canny_low_high_ratio = 2
     canny_high_thresholds = [1000, 500, 250]
     lines_giveup_threshold = 3
@@ -582,23 +582,20 @@ class BoxScanner:
 
         # now store the coordinates of every well
 
+        well_size = self.image.width
         well_x = []
-        cell_width = 0
         for i in range(Params.num_cols):
             well_x.append(left_tab_end + (col_edges[i+1][0] + col_edges[i][1]) / 2)
-            cell_width += col_edges[i+1][0] - col_edges[i][1]
+            well_size = min(well_size, col_edges[i+1][0] - col_edges[i][1])
             #cv.Rectangle(self.image, (col_edges[i][1], 0), (col_edges[i+1][0], self.image.height), (255, 0, 0), 5)
-        cell_width /= Params.num_cols
 
         well_y = []
-        cell_height = 0
         for i in range(Params.num_rows):
             well_y.append(top + (row_edges[i+1][0] + row_edges[i][1]) / 2)
-            cell_height += row_edges[i+1][0] - row_edges[i][1]
+            well_size = min(well_size, row_edges[i+1][0] - row_edges[i][1])
             #cv.Rectangle(self.image, (0, row_edges[i][1]), (self.image.width, row_edges[i+1][0]), (255, 0, 0), 5)
-        cell_height /= Params.num_rows
 
-        self.tube_radius = int((cell_width + cell_height) / Params.tube_well_factor)
+        self.tube_radius = int(well_size / Params.tube_well_factor)
 
         if self.tube_radius < Params.min_tube_radius:
             print "Tubes are too small:", self.tube_radius
